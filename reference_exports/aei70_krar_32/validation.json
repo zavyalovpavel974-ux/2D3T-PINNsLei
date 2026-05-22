@@ -1,0 +1,167 @@
+{
+  "path": "reference_exports\\aei70_krar_32\\reference_snapshots.npz",
+  "nx": 32,
+  "ny": 32,
+  "times": [
+    {
+      "time": 1e-05,
+      "Te": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 0.0003,
+        "max": 0.0003
+      },
+      "Ti": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 0.0003,
+        "max": 0.0003
+      },
+      "Tr": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 0.0003,
+        "max": 0.00031999999999999997
+      },
+      "top_Tr_expected": 0.00031999999999999997,
+      "top_Tr_max_abs_error": 0.0
+    },
+    {
+      "time": 0.3,
+      "Te": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 0.1193436621835574,
+        "max": 0.1875944256136762
+      },
+      "Ti": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 0.04401512498379069,
+        "max": 0.06285334802520529
+      },
+      "Tr": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 0.3781686711258907,
+        "max": 0.6003
+      },
+      "top_Tr_expected": 0.6003,
+      "top_Tr_max_abs_error": 0.0
+    },
+    {
+      "time": 0.5,
+      "Te": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 0.25722515741113483,
+        "max": 0.3444428398453124
+      },
+      "Ti": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 0.09672641927180467,
+        "max": 0.12430567575496788
+      },
+      "Tr": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 0.729030538012418,
+        "max": 1.0003
+      },
+      "top_Tr_expected": 1.0003,
+      "top_Tr_max_abs_error": 0.0
+    },
+    {
+      "time": 0.7,
+      "Te": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 0.41768223031237883,
+        "max": 0.509832136047668
+      },
+      "Ti": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 0.15995285651898603,
+        "max": 0.19374539233796864
+      },
+      "Tr": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 1.0923370551124167,
+        "max": 1.4002999999999999
+      },
+      "top_Tr_expected": 1.4002999999999999,
+      "top_Tr_max_abs_error": 0.0
+    },
+    {
+      "time": 1.0,
+      "Te": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 0.6961657824793017,
+        "max": 0.7694727306993016
+      },
+      "Ti": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 0.2705573711608047,
+        "max": 0.30885855198208295
+      },
+      "Tr": {
+        "shape": [
+          32,
+          32
+        ],
+        "finite": true,
+        "min": 1.6613105297793607,
+        "max": 2.0003
+      },
+      "top_Tr_expected": 2.0003,
+      "top_Tr_max_abs_error": 0.0
+    }
+  ]
+}

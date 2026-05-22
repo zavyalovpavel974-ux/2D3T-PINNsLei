@@ -46,3 +46,7 @@ sol1_*.txt
 *.ckpt
 *.h5
 *.hdf5
+
+# Reproducible intermediate-grid reference artifact kept for handoff.
+!reference_exports/aei70_krar_32/
+!reference_exports/aei70_krar_32/*
