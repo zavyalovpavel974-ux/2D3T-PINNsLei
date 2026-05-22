@@ -659,7 +659,7 @@ class PhysicsInformedNN:
                 #       inieloss: %.3e, iniiloss: %.3e, inirloss: %.3e, \
                 #       borg1: %.3e, borg2: %.3e, borg4:%.3e, \
                 #       bei8: %.3e' % 
-                      (it, self.rou.data.cpu().numpy(), loss, loss_func(fe_pred, torch.zeros_like(fe_pred)).cpu().data.numpy(),
+                      (it, float(self.rou.detach().cpu().reshape(-1)[0]), loss, loss_func(fe_pred, torch.zeros_like(fe_pred)).cpu().data.numpy(),
                       loss_func(fi_pred, torch.zeros_like(fi_pred)).cpu().data.numpy(),
                       loss_func(fr_pred, torch.zeros_like(fr_pred)).cpu().data.numpy(),
                       loss_func(u0_pred[:,0:1],t0*torch.ones_like(u0_pred[:,0:1])).cpu().data.numpy(),
@@ -699,6 +699,7 @@ class PhysicsInformedNN:
                     return f"{value:.4f}"
                 
                 FolderName = 'Train_6000_30000_11242220/'
+                os.makedirs('./figures/' + FolderName, exist_ok=True)
                 
                 with open('./sol1_wei_aei70_wer_krar_1.txt','r') as fp:
                 # with open('./sol1e-8.txt','r') as fp:

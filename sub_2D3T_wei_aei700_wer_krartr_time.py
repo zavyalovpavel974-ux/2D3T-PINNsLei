@@ -558,6 +558,7 @@ class PhysicsInformedNN:
                     return f"{value:.4f}"
                 
                 FolderName = 'Train_6000_30000_11281214/'
+                os.makedirs('./figures/' + FolderName, exist_ok=True)
                 
                 with open('./sol1_wei_aei700_wer_krartr_1.txt','r') as fp:
                 # with open('./sol1e-8.txt','r') as fp:
