@@ -50,3 +50,12 @@ sol1_*.txt
 # Reproducible intermediate-grid reference artifact kept for handoff.
 !reference_exports/aei70_krar_32/
 !reference_exports/aei70_krar_32/*
+
+# Local reference solver outputs
+reference_solver_outputs/
+
+# Local Codex skill build artifacts
+.codex/skills/process-summary.zip
+.codex/skills/process-summary/SKILL.md.bak
+.codex/skills/process-summary/agents/
+.codex/skills/process-summaries/
