@@ -7,6 +7,7 @@ author : lei xiaojun
 """
 
 import sys,os
+import json
 sys.path.insert(0, '../Utilities/')
 
 import torch
@@ -14,7 +15,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.ticker import ScalarFormatter, FuncFormatter
 from matplotlib.ticker import MaxNLocator
-from sub_2D3T_wei_aei70_wer_krar_inverse import PhysicsInformedNN 
+from sub_2D3T_wei_aei70_wer_krar_inverse import PhysicsInformedNN, args as repro_args
 import scipy.io
 from scipy.interpolate import griddata
 from pyDOE import lhs
@@ -97,6 +98,8 @@ if __name__ == "__main__":
     # Max_iter = 5001    #15001
     Max_iter = 6001    #15001
     # Max_iter = 21    #15001
+    if repro_args.max_iter_override is not None:
+        Max_iter = repro_args.max_iter_override
     
     
     #极坐标下半径和角度  x-->r y-->theta
@@ -623,6 +626,52 @@ if __name__ == "__main__":
     print('Tel2: %.3e, Til2: %.3e, Trl2: %.3e' % (Tel2_err,Til2_err,Trl2_err))
     print('Tel1: %.3e, Til1: %.3e, Trl1: %.3e' % (Tel1_err,Til1_err,Trl1_err))
     print('Teli: %.3e, Tili: %.3e, Trli: %.3e' % (Teli_err,Tili_err,Trli_err))
+    if repro_args.metrics_json:
+        metrics = {
+            "case": "example2_inverse",
+            "reference": "interpolated_80x80_from20",
+            "training_time_seconds": float(elapsed),
+            "rho": float(model.rou.detach().cpu().reshape(-1)[0]),
+            "rho_true": 1.1,
+            "rho_abs_error": float(abs(float(model.rou.detach().cpu().reshape(-1)[0]) - 1.1)),
+            "rho_rel_error": float(abs(float(model.rou.detach().cpu().reshape(-1)[0]) - 1.1) / 1.1),
+            "aggregate": {
+                "Te": {"L2": float(Tel2_err), "L1": float(Tel1_err), "Linf": float(Teli_err)},
+                "Ti": {"L2": float(Til2_err), "L1": float(Til1_err), "Linf": float(Tili_err)},
+                "Tr": {"L2": float(Trl2_err), "L1": float(Trl1_err), "Linf": float(Trli_err)},
+            },
+            "times": {
+                "1e-5": {
+                    "Te": {"L2": float(Tel2_err_1efu5), "L1": float(Tel1_err_1efu5), "Linf": float(Teli_err_1efu5)},
+                    "Ti": {"L2": float(Til2_err_1efu5), "L1": float(Til1_err_1efu5), "Linf": float(Tili_err_1efu5)},
+                    "Tr": {"L2": float(Trl2_err_1efu5), "L1": float(Trl1_err_1efu5), "Linf": float(Trli_err_1efu5)},
+                },
+                "0.3": {
+                    "Te": {"L2": float(Tel2_err_0p3), "L1": float(Tel1_err_0p3), "Linf": float(Teli_err_0p3)},
+                    "Ti": {"L2": float(Til2_err_0p3), "L1": float(Til1_err_0p3), "Linf": float(Tili_err_0p3)},
+                    "Tr": {"L2": float(Trl2_err_0p3), "L1": float(Trl1_err_0p3), "Linf": float(Trli_err_0p3)},
+                },
+                "0.5": {
+                    "Te": {"L2": float(Tel2_err_0p5), "L1": float(Tel1_err_0p5), "Linf": float(Teli_err_0p5)},
+                    "Ti": {"L2": float(Til2_err_0p5), "L1": float(Til1_err_0p5), "Linf": float(Tili_err_0p5)},
+                    "Tr": {"L2": float(Trl2_err_0p5), "L1": float(Trl1_err_0p5), "Linf": float(Trli_err_0p5)},
+                },
+                "0.7": {
+                    "Te": {"L2": float(Tel2_err_0p7), "L1": float(Tel1_err_0p7), "Linf": float(Teli_err_0p7)},
+                    "Ti": {"L2": float(Til2_err_0p7), "L1": float(Til1_err_0p7), "Linf": float(Tili_err_0p7)},
+                    "Tr": {"L2": float(Trl2_err_0p7), "L1": float(Trl1_err_0p7), "Linf": float(Trli_err_0p7)},
+                },
+                "1.0": {
+                    "Te": {"L2": float(Tel2_err_1), "L1": float(Tel1_err_1), "Linf": float(Teli_err_1)},
+                    "Ti": {"L2": float(Til2_err_1), "L1": float(Til1_err_1), "Linf": float(Tili_err_1)},
+                    "Tr": {"L2": float(Trl2_err_1), "L1": float(Trl1_err_1), "Linf": float(Trli_err_1)},
+                },
+            },
+        }
+        os.makedirs(os.path.dirname(repro_args.metrics_json) or ".", exist_ok=True)
+        with open(repro_args.metrics_json, "w", encoding="utf-8") as f:
+            json.dump(metrics, f, indent=2)
+        print("[repro] wrote metrics: %s" % repro_args.metrics_json)
     
     
     # Tel2_err = np.linalg.norm(u_star[:,0:1]-Tep_pred,2)/np.linalg.norm(u_star[:,0:1],2) 

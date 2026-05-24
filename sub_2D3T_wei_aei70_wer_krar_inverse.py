@@ -9,6 +9,7 @@ from matplotlib.ticker import MaxNLocator
 import argparse
 import os
 import pdb
+import time
 # torch.set_default_tensor_type(torch.DoubleTensor)
 
 parser = argparse.ArgumentParser('xPINN_Poissons_2D')
@@ -26,9 +27,27 @@ parser.add_argument('--which_decay', type=int, default=1)  # lr_decay:1-Exponent
 parser.add_argument('--weight_decay', type=float, default=0)    # weight decay in optimizer
 
 parser.add_argument('--GPU', type=int, default=0)
+parser.add_argument('--checkpoint-dir', default=None)
+parser.add_argument('--checkpoint-interval', type=int, default=200)
+parser.add_argument('--resume-checkpoint', default=None)
+parser.add_argument('--max-walltime-seconds', type=float, default=0.0)
+parser.add_argument('--max-iter-override', type=int, default=None)
+parser.add_argument('--metrics-json', default=None)
 # parser.add_argument('--adjoint', action='store_true')
 args = parser.parse_args()      # parsing the parameters
 argsDict = args.__dict__
+
+
+class ReproWalltimeReached(RuntimeError):
+    pass
+
+
+def _as_float(value):
+    if hasattr(value, "detach"):
+        value = value.detach().cpu().reshape(-1)[0]
+    if hasattr(value, "item"):
+        return float(value.item())
+    return float(value)
 
 
 # ===========================================================
@@ -461,6 +480,57 @@ class PhysicsInformedNN:
         Tiiniloss = []
         Triniloss = []
         Trboundloss = []
+        train_started_at = time.time()
+        checkpoint_dir = args.checkpoint_dir
+        if checkpoint_dir:
+            os.makedirs(checkpoint_dir, exist_ok=True)
+        start_iter = 0
+        resume_phase = None
+        last_checkpoint_it = -1
+
+        def save_checkpoint(it, phase, loss_value=None):
+            if not checkpoint_dir:
+                return None
+            path = os.path.join(checkpoint_dir, "latest.pt")
+            payload = {
+                "model": self.net_u.state_dict(),
+                "optimizer": opt.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "lbfgs": opt_lbfgs.state_dict(),
+                "adam_iter": int(min(max(it, 0), nIter)),
+                "it": int(it),
+                "phase": phase,
+                "rho": _as_float(self.rou),
+                "loss": None if loss_value is None else _as_float(loss_value),
+                "elapsed_seconds": time.time() - train_started_at,
+                "args": argsDict,
+            }
+            torch.save(payload, path)
+            return path
+
+        def maybe_stop_for_walltime(it, phase, loss_value=None):
+            max_walltime = float(args.max_walltime_seconds or 0.0)
+            if max_walltime > 0.0 and time.time() - train_started_at >= max_walltime:
+                path = save_checkpoint(it, phase, loss_value)
+                raise ReproWalltimeReached("saved checkpoint at %s after %.1f seconds" % (path, time.time() - train_started_at))
+
+        if args.resume_checkpoint:
+            checkpoint = torch.load(args.resume_checkpoint, map_location=DeviceDtype["device"], weights_only=False)
+            self.net_u.load_state_dict(checkpoint["model"])
+            if "optimizer" in checkpoint:
+                opt.load_state_dict(checkpoint["optimizer"])
+            if "scheduler" in checkpoint:
+                scheduler.load_state_dict(checkpoint["scheduler"])
+            if "lbfgs" in checkpoint:
+                opt_lbfgs.load_state_dict(checkpoint["lbfgs"])
+            start_iter = int(checkpoint.get("adam_iter", 0))
+            resume_phase = checkpoint.get("phase")
+            print("[repro] resumed checkpoint %s at phase=%s it=%s rho=%.8e" % (
+                args.resume_checkpoint,
+                resume_phase,
+                checkpoint.get("it", start_iter),
+                _as_float(self.rou),
+            ), flush=True)
         
         
         def Tr0(y):
@@ -888,6 +958,12 @@ class PhysicsInformedNN:
                     plt.show()
                 plt.close()  # 这是关闭绘图区，自己查看我打算画在一张图上了
                 
+            nonlocal last_checkpoint_it
+            if checkpoint_dir and args.checkpoint_interval > 0 and it % args.checkpoint_interval == 0 and it != last_checkpoint_it:
+                last_checkpoint_it = it
+                path = save_checkpoint(it, "adam" if it < nIter else "lbfgs", loss)
+                print("[repro] checkpoint saved: %s" % path, flush=True)
+            maybe_stop_for_walltime(it, "adam" if it < nIter else "lbfgs", loss)
             self.net_u.zero_grad() # model.zero_grad 与 opt.zero_grad 完全等价，opt甚至是调用了model.
             loss.backward()
             return loss
@@ -897,17 +973,20 @@ class PhysicsInformedNN:
         # ****  Adam  
         # ============================================================ 
 
-        for it in range(nIter):
-            
-            #opt.zero_grad()
-            #loss.backward()
-            opt.step(lambda : complus_loss(it))  # LBFGS特有的使用方式（因为需要多次计算Loss）对一阶算法也适用
-            scheduler.step()
+        if resume_phase != "lbfgs":
+            for it in range(start_iter, nIter):
+                
+                #opt.zero_grad()
+                #loss.backward()
+                opt.step(lambda : complus_loss(it))  # LBFGS特有的使用方式（因为需要多次计算Loss）对一阶算法也适用
+                scheduler.step()
 
         # ============================================================
         # ****  LBFGS , LBFGS 可以自行获取迭代次数 用以判断输出，无需传入
         # ============================================================ 
+        save_checkpoint(nIter, "lbfgs_start")
         opt_lbfgs.step(complus_loss)
+        save_checkpoint(nIter, "completed")
             
             
             

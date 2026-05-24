@@ -7,6 +7,7 @@ author : lei xiaojun
 """
 
 import sys,os
+import json
 sys.path.insert(0, '../Utilities/')
 
 import torch
@@ -14,7 +15,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.ticker import ScalarFormatter, FuncFormatter
 from matplotlib.ticker import MaxNLocator
-from sub_2D3T_wei_aei700_wer_krartr_time import PhysicsInformedNN 
+from sub_2D3T_wei_aei700_wer_krartr_time import PhysicsInformedNN, args as repro_args
 import scipy.io
 from scipy.interpolate import griddata
 from pyDOE import lhs
@@ -106,6 +107,8 @@ if __name__ == "__main__":
     # Max_iter = 5001    #15001
     Max_iter = 6001    #15001
     #Max_iter = 21    #15001
+    if repro_args.max_iter_override is not None:
+        Max_iter = repro_args.max_iter_override
     
     
     #极坐标下半径和角度  x-->r y-->theta
@@ -266,12 +269,29 @@ if __name__ == "__main__":
     # print('Training time: %.4f' % (elapsed))
    
     train_time=0
+    stage_training_times = {}
+    transfer_stages = [70,400,700]
+    resume_checkpoint_for_stage = repro_args.resume_checkpoint
+    resume_stage = repro_args.resume_stage
+    if resume_checkpoint_for_stage and resume_stage is None:
+        try:
+            checkpoint_meta = torch.load(resume_checkpoint_for_stage, map_location='cpu', weights_only=False)
+            resume_stage = checkpoint_meta.get("Aei")
+        except Exception as exc:
+            print("[repro] could not infer resume stage from checkpoint: %s" % exc, flush=True)
+    if resume_stage is not None:
+        resume_stage = int(float(resume_stage))
+        print("[repro] resume transfer stage Aei=%d" % resume_stage, flush=True)
     Aei = False
     # Aei  : old
     # Aei2 : new
-    for Aei2 in [70,400,700]:  
+    for Aei2 in transfer_stages:  
     #for Aei2 in [700]:  
     # for Aei2 in [70,7000]:
+        if resume_stage is not None and Aei2 < resume_stage:
+            print("[repro] skipping completed transfer stage Aei=%d" % Aei2, flush=True)
+            Aei = Aei2
+            continue
         
         print('Aei: %d' % (Aei))
         #model = PhysicsInformedNN(Xlbtrain, Xubtrain, Ylbtrain, Yubtrain, T0train, X_f_train_total, NN_layers_total,\
@@ -283,9 +303,15 @@ if __name__ == "__main__":
             model.net_u.load_state_dict(torch.load('./figures/'+FolderName+'_%d_after.pt'%(Aei)))
         start_time = time.time()                
         # Teiniloss, Tiiniloss, Triniloss, TeL2, TiL2, TrL2, Teloss, Tiloss, Trloss, MSE_hist, a_hist, L2error_u, L1error_u, Linferror_u = model.train(Max_iter,X_star,u_star)
+        repro_args.resume_checkpoint = resume_checkpoint_for_stage if resume_stage == Aei2 else None
         lr, Trboundloss, Teiniloss, Tiiniloss, Triniloss, TeL2, TiL2, TrL2, Teloss, Tiloss, Trloss, MSE_hist, a_hist, L2error_u, L1error_u, Linferror_u = model.train(Max_iter,X_star)
+        repro_args.resume_checkpoint = None
+        if resume_stage == Aei2:
+            resume_stage = None
+            resume_checkpoint_for_stage = None
         elapsed = time.time() - start_time
         train_time += elapsed   
+        stage_training_times[str(Aei2)] = float(elapsed)
         torch.save(model.net_u.state_dict(), './figures/'+FolderName+'_%d_after.pt'%(Aei2))   
         Aei = Aei2
         print('Training time: %.4f' % (elapsed))
@@ -673,6 +699,44 @@ if __name__ == "__main__":
     print('Tel2: %.3e, Til2: %.3e, Trl2: %.3e' % (Tel2_err,Til2_err,Trl2_err))
     print('Tel1: %.3e, Til1: %.3e, Trl1: %.3e' % (Tel1_err,Til1_err,Trl1_err))
     print('Teli: %.3e, Tili: %.3e, Trli: %.3e' % (Teli_err,Tili_err,Trli_err))
+    repro_metrics = {
+        "case": "example5_transfer",
+        "reference": "interpolated_80x80_from20",
+        "total_training_time_seconds": float(train_time),
+        "stage_training_time_seconds": stage_training_times,
+        "aggregate": {
+            "Te": {"L2": float(Tel2_err), "L1": float(Tel1_err), "Linf": float(Teli_err)},
+            "Ti": {"L2": float(Til2_err), "L1": float(Til1_err), "Linf": float(Tili_err)},
+            "Tr": {"L2": float(Trl2_err), "L1": float(Trl1_err), "Linf": float(Trli_err)},
+        },
+        "times": {
+            "1e-5": {
+                "Te": {"L2": float(Tel2_err_1efu5), "L1": float(Tel1_err_1efu5), "Linf": float(Teli_err_1efu5)},
+                "Ti": {"L2": float(Til2_err_1efu5), "L1": float(Til1_err_1efu5), "Linf": float(Tili_err_1efu5)},
+                "Tr": {"L2": float(Trl2_err_1efu5), "L1": float(Trl1_err_1efu5), "Linf": float(Trli_err_1efu5)},
+            },
+            "0.3": {
+                "Te": {"L2": float(Tel2_err_0p3), "L1": float(Tel1_err_0p3), "Linf": float(Teli_err_0p3)},
+                "Ti": {"L2": float(Til2_err_0p3), "L1": float(Til1_err_0p3), "Linf": float(Tili_err_0p3)},
+                "Tr": {"L2": float(Trl2_err_0p3), "L1": float(Trl1_err_0p3), "Linf": float(Trli_err_0p3)},
+            },
+            "0.5": {
+                "Te": {"L2": float(Tel2_err_0p5), "L1": float(Tel1_err_0p5), "Linf": float(Teli_err_0p5)},
+                "Ti": {"L2": float(Til2_err_0p5), "L1": float(Til1_err_0p5), "Linf": float(Tili_err_0p5)},
+                "Tr": {"L2": float(Trl2_err_0p5), "L1": float(Trl1_err_0p5), "Linf": float(Trli_err_0p5)},
+            },
+            "0.7": {
+                "Te": {"L2": float(Tel2_err_0p7), "L1": float(Tel1_err_0p7), "Linf": float(Teli_err_0p7)},
+                "Ti": {"L2": float(Til2_err_0p7), "L1": float(Til1_err_0p7), "Linf": float(Tili_err_0p7)},
+                "Tr": {"L2": float(Trl2_err_0p7), "L1": float(Trl1_err_0p7), "Linf": float(Trli_err_0p7)},
+            },
+            "1.0": {
+                "Te": {"L2": float(Tel2_err_1), "L1": float(Tel1_err_1), "Linf": float(Teli_err_1)},
+                "Ti": {"L2": float(Til2_err_1), "L1": float(Til1_err_1), "Linf": float(Tili_err_1)},
+                "Tr": {"L2": float(Trl2_err_1), "L1": float(Trl1_err_1), "Linf": float(Trli_err_1)},
+            },
+        },
+    }
     
     
     # Tel2_err = np.linalg.norm(u_star[:,0:1]-Tep_pred,2)/np.linalg.norm(u_star[:,0:1],2) 
@@ -748,6 +812,12 @@ if __name__ == "__main__":
     upred_t005 = model.predict(X_2d3t_t005).reshape(-1,1)
     elapsed = time.time() - start_time
     print('Inference time: %.4f' % (elapsed))
+    if repro_args.metrics_json:
+        repro_metrics["inference_time_seconds"] = float(elapsed)
+        os.makedirs(os.path.dirname(repro_args.metrics_json) or ".", exist_ok=True)
+        with open(repro_args.metrics_json, "w", encoding="utf-8") as f:
+            json.dump(repro_metrics, f, indent=2)
+        print("[repro] wrote metrics: %s" % repro_args.metrics_json)
     upred_t005np = upred_t005.detach().numpy()
     T_mesht005 = upred_t005np.reshape(Data.shape)
 

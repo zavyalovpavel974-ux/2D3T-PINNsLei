@@ -211,7 +211,46 @@ def snapshot_from_state(U: np.ndarray, ny: int, nx: int, t: float, p: PhysicalPa
     return Te, Ti, Tr
 
 
-def solve_reference(p: PhysicalParams, cfg: ReferenceConfig, snapshot_times: Sequence[float]):
+def _save_reference_checkpoint(path: Path, x: np.ndarray, y: np.ndarray, U: np.ndarray, t: float, dt: float, step: int, snapshots, history) -> None:
+    data = {
+        "x": x,
+        "y": y,
+        "U": U,
+        "t": np.array([t], dtype=np.float64),
+        "dt": np.array([dt], dtype=np.float64),
+        "step": np.array([step], dtype=np.int64),
+        "history_json": np.array([json.dumps(history)], dtype=object),
+    }
+    for ts, (Te, Ti, Tr) in sorted(snapshots.items()):
+        tag = f"{ts:.10f}"
+        data[f"Te_{tag}"] = Te
+        data[f"Ti_{tag}"] = Ti
+        data[f"Tr_{tag}"] = Tr
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, **data)
+
+
+def _load_reference_checkpoint(path: Path):
+    d = np.load(path, allow_pickle=True)
+    snapshots = {}
+    for key in d.files:
+        if key.startswith("Te_"):
+            tag = key[3:]
+            snapshots[float(tag)] = (np.asarray(d[f"Te_{tag}"]), np.asarray(d[f"Ti_{tag}"]), np.asarray(d[f"Tr_{tag}"]))
+    history_raw = d["history_json"][0]
+    history = json.loads(str(history_raw)) if str(history_raw) else []
+    return np.asarray(d["x"]), np.asarray(d["y"]), np.asarray(d["U"]), float(d["t"][0]), float(d["dt"][0]), int(d["step"][0]), snapshots, history
+
+
+def solve_reference(
+    p: PhysicalParams,
+    cfg: ReferenceConfig,
+    snapshot_times: Sequence[float],
+    checkpoint_path: Path | None = None,
+    resume_checkpoint: Path | None = None,
+    checkpoint_interval_steps: int = 25,
+    max_walltime_seconds: float = 0.0,
+):
     x = np.linspace(0.0, 1.0, cfg.nx, dtype=np.float64)
     y = np.linspace(0.0, 1.0, cfg.ny, dtype=np.float64)
     dx, dy = float(x[1] - x[0]), float(y[1] - y[0])
@@ -222,6 +261,10 @@ def solve_reference(p: PhysicalParams, cfg: ReferenceConfig, snapshot_times: Seq
     snapshots: Dict[float, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     history = []
     t, dt, step = 0.0, cfg.dt_init, 0
+    if resume_checkpoint:
+        x, y, U, t, dt, step, snapshots, history = _load_reference_checkpoint(resume_checkpoint)
+        dx, dy = float(x[1] - x[0]), float(y[1] - y[0])
+        print(f"[reference] resumed {resume_checkpoint} at step={step} t={t:.6f} dt={dt:.2e}", flush=True)
     start = time.time()
     while t < 1.0 - 1e-14:
         dt = min(dt, 1.0 - t)
@@ -249,8 +292,15 @@ def solve_reference(p: PhysicalParams, cfg: ReferenceConfig, snapshot_times: Seq
                 snapshots[ts] = snapshot_from_state(U_old + a * (U - U_old), cfg.ny, cfg.nx, ts, p)
         if nit <= 3 and dt < cfg.dt_max:
             dt = min(cfg.dt_max, dt * 1.2)
+        if checkpoint_path and checkpoint_interval_steps > 0 and step % checkpoint_interval_steps == 0:
+            _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history)
+        if checkpoint_path and max_walltime_seconds > 0.0 and time.time() - start >= max_walltime_seconds:
+            _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history)
+            raise TimeoutError(f"reference solve reached walltime at step={step} t={t:.6f}; checkpoint={checkpoint_path}")
 
     print(f"[reference] done in {time.time()-start:.1f}s, steps={step}", flush=True)
+    if checkpoint_path:
+        _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history)
     return x, y, snapshots, history
 
 
@@ -392,6 +442,10 @@ def main() -> None:
     solve_p.add_argument("--dt-max", type=float, default=2e-2)
     solve_p.add_argument("--newton-max", type=int, default=8)
     solve_p.add_argument("--gmres-maxiter", type=int, default=120)
+    solve_p.add_argument("--checkpoint", type=Path)
+    solve_p.add_argument("--resume-checkpoint", type=Path)
+    solve_p.add_argument("--checkpoint-interval-steps", type=int, default=25)
+    solve_p.add_argument("--max-walltime-seconds", type=float, default=0.0)
 
     export_p = sub.add_parser("export", help="export author txt files from an npz")
     export_p.add_argument("--case", choices=["aei70_krar", "aei700_krartr"], required=True)
@@ -423,7 +477,15 @@ def main() -> None:
             newton_max=args.newton_max,
             gmres_maxiter=args.gmres_maxiter,
         )
-        x, y, snapshots, history = solve_reference(params, cfg, parse_times(args.times))
+        x, y, snapshots, history = solve_reference(
+            params,
+            cfg,
+            parse_times(args.times),
+            checkpoint_path=args.checkpoint,
+            resume_checkpoint=args.resume_checkpoint,
+            checkpoint_interval_steps=args.checkpoint_interval_steps,
+            max_walltime_seconds=args.max_walltime_seconds,
+        )
         save_npz(args.out, x, y, snapshots)
         meta = {"case": args.case, "params": asdict(params), "config": asdict(cfg), "history": history}
         args.out.with_suffix(".history.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
