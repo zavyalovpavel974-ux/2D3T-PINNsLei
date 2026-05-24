@@ -462,7 +462,7 @@ if __name__ == "__main__":
     
     
     #计算5个时刻的三种范数意义下的误差
-    with open('./sol1_wei_aei700_wer_krartr_80_1.txt','r') as fp:
+    with open('./sol1_wei_aei700_wer_krartr_1e-5.txt','r') as fp:
     # with open('./sol1e-8.txt','r') as fp:
         import numpy as np
         from itertools import product
@@ -493,7 +493,7 @@ if __name__ == "__main__":
     
     
     #计算5个时刻的三种范数意义下的误差
-    with open('./sol1_wei_aei700_wer_krartr_80_1.txt','r') as fp:
+    with open('./sol1_wei_aei700_wer_krartr_0p3.txt','r') as fp:
     # with open('./sol1e-8.txt','r') as fp:
         import numpy as np
         from itertools import product
@@ -523,7 +523,7 @@ if __name__ == "__main__":
     upred_0p3 = upred_0p3.detach().numpy()
     
     #计算5个时刻的三种范数意义下的误差
-    with open('./sol1_wei_aei700_wer_krartr_80_1.txt','r') as fp:
+    with open('./sol1_wei_aei700_wer_krartr_0p5.txt','r') as fp:
     # with open('./sol1e-8.txt','r') as fp:
         import numpy as np
         from itertools import product
@@ -554,7 +554,7 @@ if __name__ == "__main__":
         
     
     #计算5个时刻的三种范数意义下的误差
-    with open('./sol1_wei_aei700_wer_krartr_80_1.txt','r') as fp:
+    with open('./sol1_wei_aei700_wer_krartr_0p7.txt','r') as fp:
     # with open('./sol1e-8.txt','r') as fp:
         import numpy as np
         from itertools import product
@@ -586,7 +586,7 @@ if __name__ == "__main__":
     
     
     #计算5个时刻的三种范数意义下的误差
-    with open('./sol1_wei_aei700_wer_krartr_80_1.txt','r') as fp:
+    with open('./sol1_wei_aei700_wer_krartr_1.txt','r') as fp:
     # with open('./sol1e-8.txt','r') as fp:
         import numpy as np
         from itertools import product
