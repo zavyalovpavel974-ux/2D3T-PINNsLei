@@ -25,13 +25,20 @@
   loading and entered GPU training; it was cut off by the 120 s timeout.
 - A short Example 5 smoke test created its output directory and entered the
   first `Aei=70` training stage; it was also cut off by the 120 s timeout.
+- Frozen Example 5 post-processing metrics have a reference-file mismatch:
+  all five time-diagnostic blocks in the original script read
+  `sol1_wei_aei700_wer_krartr_80_1.txt`, which is the same data as the `t=1`
+  file.
+- A read-only recalculation with per-time Example 5 reference files has been
+  recorded as an intermediate corrected metric convention. It is not a final
+  strict paper-level `80x80` reference-solver result.
 
 ## Reproduction Targets
 
 | Paper case | Reference case | Required files |
 | --- | --- | --- |
 | Example 2 / inverse data | `Aei=70`, `Kr=Ar` | `sol1_wei_aei70_wer_krar_{1e-5,0p3,0p5,0p7,1}.txt` |
-| Example 5 | `Aei=700`, `Kr=Ar*Tr` | `sol1_wei_aei700_wer_krartr_1.txt`, `sol1_wei_aei700_wer_krartr_80_1.txt` |
+| Example 5 | `Aei=700`, `Kr=Ar*Tr` | `sol1_wei_aei700_wer_krartr_{1e-5,0p3,0p5,0p7,1}.txt`; legacy `sol1_wei_aei700_wer_krartr_80_1.txt` is an alias of the `t=1` file |
 
 ## Commands
 
@@ -98,6 +105,10 @@ python -u 2D3T_wei_aei70_wer_krar_inverse.py
 - Done for smoke-test data: Example 5 script reached the first transfer stage
   (`Aei: 0`, then constructing the `Aei=70` model) without reference-file
   errors.
+- Done for frozen Example 5 read-only auditing: the per-time reference mapping
+  was verified by `recalc_example5_metrics_per_time_reference.py`, and the
+  reconstructed checkpoint path matched the frozen `t=1` metrics with maximum
+  absolute difference `0.0`.
 - Pending: strict `80x80` references.
 - Pending/blocked by runtime: complete `32x32` strict reference for
   `aei700_krartr`.
@@ -136,12 +147,37 @@ python -u 2D3T_wei_aei70_wer_krar_inverse.py
   formatted as a scalar in the training log.
 - The two submodules now ensure their internal figure folders exist before
   saving intermediate `3x3.png` plots.
+- Example 5 frozen metrics require an intermediate correction note. In
+  `2D3T_wei_aei700_wer_krartr_time.py`, the five time-point error blocks for
+  `1e-5`, `0.3`, `0.5`, `0.7`, and `1.0` all read
+  `sol1_wei_aei700_wer_krartr_80_1.txt`. The frozen workdir also contains
+  distinct per-time reference files:
+  `sol1_wei_aei700_wer_krartr_1e-5.txt`,
+  `sol1_wei_aei700_wer_krartr_0p3.txt`,
+  `sol1_wei_aei700_wer_krartr_0p5.txt`,
+  `sol1_wei_aei700_wer_krartr_0p7.txt`, and
+  `sol1_wei_aei700_wer_krartr_1.txt`. The read-only script
+  `recalc_example5_metrics_per_time_reference.py` verified that
+  `sol1_wei_aei700_wer_krartr_80_1.txt` has the same SHA256 hash as
+  `sol1_wei_aei700_wer_krartr_1.txt`, so the legacy `_80_1` file should only be
+  used for `t=1` diagnostics.
+- The per-time read-only recalculation wrote new outputs under
+  `reference_solver_outputs/example5_static_recalc/` and did not modify
+  `runs/overnight_current`. The corrected aggregate L2 values are
+  `Te=0.1957274767`, `Ti=0.2065726908`, and `Tr=0.1632200766`, compared with
+  the original aggregate L2 values `Te=0.7049614629`, `Ti=0.7081070316`, and
+  `Tr=0.6686891071`. This reduction is evidence that the earlier aggregate
+  errors were inflated by comparing early-time predictions against the `t=1`
+  reference, not evidence of final strict `80x80` paper-level accuracy.
+- Process details for the Example 5 read-only recalculation are recorded in
+  `process-summaries/2026-05-25-example5-per-time-recalc-summary.md`.
 
 ## Open Risks
 
-- The public forward script appears to read only the `t=1` Example 5 reference
-  text file for all diagnostic blocks, despite the paper discussing multiple
-  time snapshots.
+- The public forward script reads the `t=1` Example 5 reference text file for
+  all five diagnostic time blocks. A read-only per-time recalculation fixes the
+  reporting convention, but strict `80x80` reference-solver validation is still
+  required before treating the corrected values as paper-level results.
 - Full training remains hour-scale.
 - The current SciPy/JFNK reference solver is not fast or robust enough for
   direct strict `80x80` production.
