@@ -1,0 +1,761 @@
+                                                              Computer Physics Communications 312 (2025) 109572
+
+
+                                                                     Contents lists available at ScienceDirect
+
+
+                                                       Computer Physics Communications
+                                                             journal homepage: www.elsevier.com/locate/cpc
+
+
+Computational Physics
+
+2D 3T PINNs for solving 2-D 3-T heat conduction equations based on
+physics-informed neural networks
+Xiaojun Lei a , Tongxiang Gu b,                      ,∗ , Xiaowen Xu b,c , Hengbin An c , Yanzhong Yao b
+
+a Graduate School of Chinese Academy of Engineering Physics, 100193, Beijing, China
+b Laboratory of Computational Physics, Institute of Applied Physics and Computational Mathematics, 100088, Beijing, China
+c CAEP Software Center for Numerical Simulation, 100088, Beijing, China
+
+
+
+
+A R T I C L E             I N F O                          A B S T R A C T
+
+The review of this paper was arranged by                   The 2-D 3-T heat conduction equations can approximate the propagation of energy in the material, as well
+Prof. David W. Walker                                      as the energy exchange process of electrons, ions and photons. In many cases, the computational time to
+                                                           solve these equations accounts for a large proportion (more than 80%) of that of the entire simulation of
+MSC:
+                                                           radiation hydrodynamics. PINNs is a promising way to solve partial diﬀerential equations (PDEs). Although
+00-01
+99-00
+                                                           numerical methods have been successful in solving 2-D 3-T heat conduction equations, the PINNs method also
+                                                           has some advantages, such as mesh-free, suitable to high dimension and complex domain problems. But the
+Keywords:                                                  original PINNs cannot solve the 2-D 3-T heat conduction equations to a reasonable precision. This work aims to
+2-D 3-T heat conduction equations                          explore which techniques need to be added to PINNs and to what extent it can address the challenges posed by
+Deep learning                                              strong nonlinearity and multi-scale phenomena present in 2-D 3-T heat conduction equations. Hence, we adopt
+PINNs                                                      guaranteed positive constraint to the outputs so that the network can be trained, give a relatively large weight to
+2D 3T PINNs                                                the initial loss and Dirichlet boundary loss, take the logarithm of the initial loss, use transfer learning and Fourier
+                                                           feature embedding to improve accuracy. We call our improved approach 2D 3T PINNs. Numerical experiments
+                                                           show that the relative 𝐿2 and the absolute 𝐿∞ error between the 2D 3T PINNs prediction and the reference
+                                                           solution is of the order of 10−2 − 10−3 .
+
+
+
+
+1. Introduction                                                                                  progress in every diﬃculty. The numerical method can solve the 2-D
+                                                                                                 3-T heat conduction equations successfully.
+                                                                                                     Because of the universal approximation theorem [13] of deep neural
+    The 2-D 3-T heat conduction equations are a model equation in the
+                                                                                                 networks, it can be used to accurately approximate any continuous func­
+numerical simulation of inertial co­finement fusion (ICF) [1,2]. Its back­                       tion. In 1990, Lee et al. used neural networks for the first time to solve
+ground is the energy equation in the radiation hydrodynamic equations,                           partial diﬀerential equations [14]. In 1998, on the basis of previous re­
+which approximately describes the propagation of radiation energy in                             search, Lagaris et al. [15] further proposed a method to solve ODE and
+a stationary medium, and the energy exchange process between elec­                               PDE using neural network. However, the practical application of these
+trons, ions and photons. Since the 2-D 3-T heat conduction equations                             methods is greatly limited due to the insuﬃcient computing power of
+has the characteristics of strong nonlinearity, multi-scale [3,4], strong                        early devices and the complexity of constructing neural networks. In
+discontinuity (multi-material), and existence of sudden change regions,                          2019, Raissi et al. utilize GPU devices with powerful computing capabil­
+it brings many diﬃculties to the discretization (finite volume method                            ities and high-performance and easy-to-use deep learning frameworks,
+is commonly used) [5--8] of the equation and the fast algorithm design                           such as Pytorch [16], Tenso­flow [17] and PaddlePaddle [18]. They
+(fast algorithms for algebraic equations) [9--12] of the discrete system.                        proposed Physics-informed neural networks (PINNs) [19] to solve PDEs.
+In many cases, the calculation time for solving the energy equation ac­                          Deep learning methods for solving PDEs have returned to people’s vision
+counts for a large proportion (more than 80%) of the entire simulation                           and have received extensive attention after that time.
+process. Although there are many diﬃculties in solving the 2-D 3-T heat                              In recent years, there have been a lot of work on solving PDE based
+conduction equations, the numerical method has achieved successful                               on PINNs. For example, Laubscher [20] applies PINNs to predict momen­
+
+
+ * Corresponding author.
+   E-mail address: txgu@iapcm.ac.cn (T. Gu).
+
+https://doi.org/10.1016/j.cpc.2025.109572
+Received 10 January 2024; Received in revised form 10 December 2024; Accepted 28 February 2025
+Available online 10 March 2025
+0010-4655/© 2025 Published by Elsevier B.V.
+X. Lei, T. Gu, X. Xu et al.                                                                                        Computer Physics Communications 312 (2025) 109572
+
+
+tum, species, and temperature distributions for a dry air humid­fication          ⎧     𝜕𝑇𝑒 1     (      )     (        )   (        )
+                                                                                  ⎪𝐶𝑣𝑒 𝜕𝑡 − 𝜌 ∇ ⋅ 𝐾𝑒 ∇𝑇𝑒 = 𝜔𝑒𝑖 𝑇𝑖 − 𝑇𝑒 + 𝜔𝑒𝑟 𝑇𝑟 − 𝑇𝑒
+problem. Zhang et al. [21] combine the methods of PINNs and Discrete              ⎪
+Velocity Method (DVM) to simulate rarefied gas flows. Mishra et al. [22]          ⎪      𝜕𝑇𝑖 1     (     )     (        )
+                                                                                  ⎨ 𝐶𝑣𝑖      − ∇ ⋅ 𝐾𝑖 ∇𝑇𝑖 = 𝜔𝑒𝑖 𝑇𝑒 − 𝑇𝑖                                         (1)
+solve the radiative transfer equation. Mao et al. [23] solve Euler equa­
+                                                                                  ⎪       𝜕𝑡  𝜌
+tions based on PINNs. Cai et al. [24] solve the heat transfer problems.           ⎪     𝜕𝑇𝑟 1     (      )     (        )
+Es’kin et al. [25] solved the Allen-Cahn equation and the Korteweg-De             ⎪ 𝐶𝑣𝑟      − ∇ ⋅ 𝐾𝑟 ∇𝑇𝑟 = 𝜔𝑒𝑟 𝑇𝑒 − 𝑇𝑟
+                                                                                  ⎩      𝜕𝑡   𝜌
+Vries equation. Jin et al. [26] proposed to use NSFNets to solve the in­
+compressible Navier-Stokes equations (NSE). Guo et al. [27] proposed              where 𝛼 = 𝑒, 𝑖, 𝑟, 𝜌 is the density of the medium, 𝑇𝛼 is the temperature
+pre-training PINNs (PT-PINNs) for the temporal development equation.              to be obtained, 𝐶𝑣𝛼 is the volume specific heat, 𝐾𝛼 = 𝐾𝛼 (𝜌, 𝑇𝛼 ) is the
+Cai et al. [24] showcase the applications of PINNs to several prototype           diﬀusion coeﬃcient, 𝜔𝑒𝑖 and 𝜔𝑒𝑟 are the energy exchange coeﬃcients
+heat transfer problems. Zhang et al. [28] proposed PINN-FFHT to solve             of electrons and ions, electrons and photons, respectively.
+the fluid flow and heat transfer problems. Jalili et al. [29] utilize PINNs           In particular, 𝐶𝑣𝛼 , 𝐾𝛼 and 𝜔𝑒𝛼 are respectively d­fined as follows:
+for simulations of two-phase fluid processes with heat transfer.
+                                                                                        ⎧𝑐 ,        𝛼=𝑒           ⎧ 𝐴 𝑇 5∕2 , 𝛼 = 𝑒
+    PINNs have been shown to have powerful approximation capabil­                       ⎪ 𝑒                       ⎪ 𝑒 𝑒
+ities for some PDEs. On the one hand, due to the importance of the                𝐶𝑣𝛼 = ⎨𝑐𝑖 ,        𝛼 = 𝑖 , 𝐾𝛼 = ⎨ 𝐴𝑖 𝑇 5∕2 , 𝛼 = 𝑖          ,
+                                                                                                                        𝑖
+2-D 3-T heat conduction equations and the progress made by PINNs on                     ⎪ 𝑐𝑟 𝑇 3 , 𝛼 = 𝑟          ⎪𝐴 𝑇 3+𝛽 , 𝛼 = 𝑟
+                                                                                        ⎩ 𝑟                       ⎩ 𝑟 𝑟
+some PDEs. On the other hand, previous work has shown that PINNs is                     {
+                                                                                                   −2∕3
+easier to solve linear PDE, or the solution is smooth, and the solution                    𝐴𝑒𝑖 𝜌𝑇𝑒      , 𝛼=𝑖
+                                                                                  𝜔𝑒𝛼 =            −1∕2       ,
+is low-frequency PDE. PINNs is diﬃcult to solve the strong nonlinear                       𝐴𝑒𝑟 𝜌𝑇𝑒      , 𝛼=𝑟
+PDE, the solution is multi-scale or discontinuous. There is little work
+                                                                                  where 𝑐𝛼 is a constant, 𝐴𝛼 , 𝐴𝑒𝛼 , 𝛽 and 𝜌 are time-independent parame­
+to solve these problems with PINNs, and the 2-D 3-T heat conduction
+                                                                                  ters, which are continuous inside the material and discontinuous at the
+equations has strong nonlinearity, multi-scale and discontinuity at the
+                                                                                  interface of diﬀerent materials, and the temperature is continuous inside
+same time. Therefore, we would like to try to use PINNs to solve the
+                                                                                  the deﬁnite solution area.
+2-D 3-T heat conduction equations. However, we find that it cannot
+be solved using the original PINNs, our analysis suggests that the com­                                                 ⋃𝑀
+                                                                                     • deﬁnite solution area: Ω𝑥𝑦 = 𝑖 Ω𝑖 is a multi-block connected re­
+plexity of the 2-D 3-T heat conduction equations and the coupling of
+                                                                                       gion composed of 𝑀 diﬀerent materials. Here, for convenience, we
+several diﬃculties are the main obstacles. Therefore, we simpl­fied the
+                                                                                       take the same material, ie 𝑀 = 1.
+equation parameters and gradually decoupled the challenges, proposing
+                                                                                     • initial conditions: 𝑇𝛼 (0, 𝑥, 𝑦) = 𝑇𝛼0 (𝑥, 𝑦), 𝛼 = 𝑒, 𝑖, 𝑟.
+eﬀective technologies for each diﬃculty. As the equation parameters be­
+                                                                                     • boundary conditions:
+came more complex and the challenges increased, we continued to add
+                                                                                       – on rigid walls: 𝐾𝛼 ∇𝑇𝛼 ⋅ 𝑛 = 0, 𝛼 = 𝑒, 𝑖, 𝑟, where 𝑛 is the outer
+new technologies on top of those already implemented to address more
+                                                                                         normal vector of the boundary.
+complex situations. In view of the characteristics and diﬃculties of 2-D
+                                                                                       – on free surfaces: 𝐾𝛼 ∇𝑇𝛼 ⋅ 𝑛 = 0, 𝛼 = 𝑒, 𝑖; 𝑇𝑟 = 𝑇𝑟 (𝑡, 𝑥, 𝑦) ∣(𝑥,𝑦)∈𝜕Ω𝑥𝑦 .
+3-T heat conduction equations, we add some new techniques based on
+PINNs. We call our method 2D 3T PINNs. For details, see Section 3.2.
+    In the case of multiple materials, the solution of 2-D 3-T heat con­              Since the heat conduction coeﬃcients 𝐾𝛼 and energy exchanging co­
+duction equations is discontinuous, and this problem is considered as             eﬃcients 𝜔𝑒𝛼 are strongly nonlinear functions of the temperature, the 2­
+future work. In this article, we try to use PINNs to explore the two              D 3-T heat conduction equations is highly nonlinear. The computational
+aspects of strong nonlinear and multi-scale problems of 2-D 3-T heat              region is composed of multiple materials, and the physical parameters
+conduction equations, and to see how diﬃcult it can be solved, to ex­             are strongly discontinuous at the interface of diﬀerent materials. Due
+plore the parameter range in which PINNs can successfully solve the 2-D           to the energy exchanging coeﬃcients 𝜔𝑒𝛼 , the 2-D 3-T heat conduction
+3-T heat conduction equations. In the process of exploring what tech­             equations are strongly coupled PDE system. All of these properties make
+nology should be used to solve the diﬃculties is eﬀective, and to what            solving the 2-D 3-T heat conduction equations a challenging task.
+extent can the diﬃculties be solved.
+                                                                                  2.2. Physics-informed neural networks
+   • We propose a novel algorithm based on PINNs to solve the 2-D
+     3-T heat conduction equations. To the best of our knowledge, we                  In 2019, Raissi et al. proposed an algorithm framework (PINNs) [19]
+     are the first to try using neural networks to solve the 2-D 3-T heat         for solving diﬀerential equations based on neural network and auto­
+     conduction equations.                                                        matic diﬀerentiation technology. Below we briefly review the PINNs
+   • We find that with slight changes in constructing the exact solution,         method. The general form of the partial diﬀerential equation can be
+     the solving of PINNs behaves very diﬀerently.                                written as:
+   • 2D 3T PINNs mainly uses five techniques, adding guaranteed pos­
+     itive constraints to the network output, giving a relatively large            [𝑢(𝑡, 𝐱)] = 𝑓 (𝑡, 𝐱), 𝐱 ∈ Ω, 𝑡 ∈ (0, 𝑇𝑚𝑎𝑥 ],                                (2)
+     weight to the initial loss and Dirichlet boundary loss, taking the
+                                                                                  with boundary conditions
+     logarithm of the initial loss, transfer learning and Fourier feature
+     embedding.
+                                                                                  [𝑢(𝑡, 𝐱)] = 𝑔(𝑡, 𝐱), 𝐱 ∈ 𝜕Ω, 𝑡 ∈ (0, 𝑇𝑚𝑎𝑥 ],                                 (3)
+   • We present a series of numerical experiments to demonstrate the
+     accuracy and eﬃciency of the proposed algorithm.                             and initial conditions
+
+2. Preliminary                                                                                        ̄
+                                                                                  𝑢(0, 𝐱) = ℎ(𝐱), 𝐱 ∈ Ω,                                                        (4)
+                                                                                                               ̄ is its closure, 𝐱 ∈ Ω is a space vari­
+                                                                                  where Ω ∈ ℝ𝑑 is an open set, Ω
+2.1. 2-D 3-T heat conduction equations                                            able vector, 𝑡 is time variable,  [⋅] represents PDE operators, and [⋅]
+                                                                                  represents functions for boundary conditions. 𝑓 is the forcing function,
+   The 2-D 3-T heat conduction equations are d­fined as follows: The              functions 𝑔 and ℎ are assumed to be known.
+2-D 3-T heat conduction equations are d­fined in space (𝑥, 𝑦) ∈ Ω𝑥𝑦 and              Let’s briefly review the deﬁnition of a feedforward neural network.
+time 0 ≤ 𝑡 ≤ 𝑇𝑚𝑎𝑥 as follows:                                                     Consider a feed-forward neural network of depth 𝐷, with 𝐱 as input,
+
+                                                                              2
+X. Lei, T. Gu, X. Xu et al.                                                                                                      Computer Physics Communications 312 (2025) 109572
+
+
+                                                                                           𝑟 (𝜃) = 𝑟𝑒 (𝜃) + 𝑟𝑖 (𝜃) + 𝑟𝑟 (𝜃),
+                                                                                                                                      ∑                      ∑
+                                                                                           𝑏 (𝜃) = 𝑏𝑟𝑑 (𝜃) ∣𝑓 𝑟𝑒𝑒 𝑠𝑢𝑟𝑓 𝑎𝑐𝑒𝑠 +                 𝑏𝑟𝑛 (𝜃) +        𝑏𝑒𝑛 (𝜃)
+                                                                                                                                  𝑟𝑖𝑔𝑖𝑑 𝑤𝑎𝑙𝑙𝑠                𝜕Ω
+                                                                                                           ∑
+                                                                                                       +        𝑏𝑖𝑛 (𝜃),
+                                                                                                           𝜕Ω
+
+                                                                                           0 (𝜃) = 0𝑒 (𝜃) + 0𝑖 (𝜃) + 0𝑟 (𝜃).
+                                                                                               For a given function 𝑢(𝑡, 𝐱) and an approximate function 𝑢ℎ (𝑡, 𝐱), the
+                                                                                                                                                                          𝑁
+                                                                                                                                                                       1 ∑
+                                                                                           mean squared error (𝑀𝑆𝐸 ) is d­fined as 𝑀𝑆𝐸(𝑢ℎ , 𝑢) ∶=                           (𝑢ℎ (𝑡𝑖 , 𝐱𝑖 )
+                                                                                                                                                                       𝑁
+                                                                                                                                                                         𝑖=1
+                                                                                           − 𝑢(𝑡𝑖 , 𝐱𝑖 ))2 .
+       Fig. 1. The architecture of the feedforward neural network (FNN).                   residual losses are calculated as follows:
+                                                                                                                       𝜕𝑇𝑒 1
+                                                                                           𝑟𝑒 (𝜃) = 𝑀𝑆𝐸(𝐶𝑣𝑒               − ∇ ⋅ (𝐾𝑒 ∇𝑇𝑒 ) − 𝜔𝑒𝑖 (𝑇𝑖 − 𝑇𝑒 )
+and d­fine the output of layer 𝑙 as 𝑢𝑙 . A feed-forward neural network is                                               𝜕𝑡  𝜌
+d­fined as follows:                                                                                     − 𝜔𝑒𝑟 (𝑇𝑟 − 𝑇𝑒 ), 𝑢𝑇𝑒 (𝑡, 𝐱; 𝜃)),
+    input layer: 𝑢1 = 𝐱 ,
+    hidden layers: 𝑢𝑙 = 𝜎(𝑊 𝑙 𝑢𝑙−1 + 𝑏𝑙 ) for 𝑙 = 2, 3, ⋯ , 𝐷 − 1,
+                                                                                                             𝜕𝑇𝑖 1
+                                                                                           𝑟𝑖 (𝜃) = 𝑀𝑆𝐸(𝐶𝑣𝑖     − ∇ ⋅ (𝐾𝑖 ∇𝑇𝑖 ) − 𝜔𝑒𝑖 (𝑇𝑒 − 𝑇𝑖 ), 𝑢𝑇𝑖 (𝑡, 𝐱; 𝜃)),
+    output layer: 𝑢𝐷 = 𝑊 𝐷 𝑢𝐷−1 + 𝑏𝐷 ,                                                                        𝜕𝑡  𝜌
+where 𝑊 𝑙 and 𝑏𝑙 represent the network weights and biases of layer                                           𝜕𝑇𝑟 1
+                                                                                           𝑟𝑟 (𝜃) = 𝑀𝑆𝐸(𝐶𝑣𝑟     − ∇ ⋅ (𝐾𝑟 ∇𝑇𝑟 ) − 𝜔𝑒𝑟 (𝑇𝑒 − 𝑇𝑟 ), 𝑢𝑇𝑟 (𝑡, 𝐱; 𝜃)),
+𝑙 respectively, and 𝜎 represents the nonlinear activation function. The                                       𝜕𝑡   𝜌
+architecture of the feedforward neural network is shown in Fig. 1.                         where 𝑢𝑇𝑒 (𝑡, 𝐱; 𝜃), 𝑢𝑇𝑖 (𝑡, 𝐱; 𝜃), 𝑢𝑇𝑟 (𝑡, 𝐱; 𝜃) are the predicted values of elec­
+    Let 𝑢(𝑡, 𝐱) be approximated by the neural network 𝑢(𝑡, 𝐱; 𝜃), 𝜃 con­                   tron, ion, and photon temperatures by the feedforward neural network.
+tains network weights 𝑊 and bias 𝑏.  and  can be calculated by
+automatic diﬀerentiation [30]. The network parameters 𝜃 are trained by                     𝑏𝑟𝑑 (𝜃) = 𝑀𝑆𝐸(𝑢𝑇𝑟 (𝑡, 𝐱; 𝜃), 𝑇𝑟 (𝑡, 𝑥, 𝑦)),
+minimizing the following loss function:
+                                                                                           𝑏𝑟𝑛 (𝜃) = 𝑀𝑆𝐸(𝐾𝑟 ∇𝑢𝑇𝑟 (𝑡, 𝐱; 𝜃) ⋅ 𝑛, 0),
+𝑡𝑜𝑡𝑎𝑙 (𝜃) = 𝑟 (𝜃) + 𝑏 (𝜃) + 0 (𝜃),                                          (5)
+                                                                                           𝑏𝑒𝑛 (𝜃) = 𝑀𝑆𝐸(𝐾𝑒 ∇𝑢𝑇𝑒 (𝑡, 𝐱; 𝜃) ⋅ 𝑛, 0),
+here 𝑟 , 𝑏 , and 0 correspond to the residual loss term that does not
+satisfy PDE (2), the boundary condition supervision loss term that does                    𝑏𝑖𝑛 (𝜃) = 𝑀𝑆𝐸(𝐾𝑖 ∇𝑢𝑇𝑖 (𝑡, 𝐱; 𝜃) ⋅ 𝑛, 0),
+not satisfy the boundary condition (3), and the initial condition super­                   0𝑒 (𝜃) = 𝑀𝑆𝐸(𝑢𝑇𝑒 (𝑡, 𝐱; 𝜃), 𝑇𝑒0 (𝑥, 𝑦)),
+vision loss term that does not satisfy the initial value condition (4).
+Deﬁnitely, they are calculated as follows:                                                 0𝑖 (𝜃) = 𝑀𝑆𝐸(𝑢𝑇𝑖 (𝑡, 𝐱; 𝜃), 𝑇𝑖0 (𝑥, 𝑦)),
+                 𝑁𝑟                                                                        0𝑟 (𝜃) = 𝑀𝑆𝐸(𝑢𝑇𝑟 (𝑡, 𝐱; 𝜃), 𝑇𝑟0 (𝑥, 𝑦)),
+         1 ∑
+𝑟 (𝜃) =        | [𝑢(𝑡𝑖𝑟 , 𝐱𝑟𝑖 ; 𝜃)] − 𝑓 (𝑡𝑖𝑟 , 𝐱𝑟𝑖 )|2 ,                      (6)
+         𝑁𝑟 𝑖=1
+                                                                                           3.2. 2D 3T PINNs
+                 𝑁𝑏
+         1 ∑
+𝑏 (𝜃) =        |[𝑢(𝑡𝑖𝑏 , 𝐱𝑏𝑖 ; 𝜃)] − 𝑔(𝑡𝑖𝑏 , 𝐱𝑏𝑖 )|2 ,                        (7)            We analyzed the characteristics and diﬃculties of 2-D 3-T heat con­
+         𝑁𝑏 𝑖=1
+                                                                                           duction equations and proposed five eﬀective techniques. We started
+                 𝑁0
+           1 ∑                                                                             with simpl­fied equations, ver­fied the corresponding techniques, and
+0 (𝜃) =          |𝑢(0, 𝐱0𝑖 ; 𝜃) − ℎ(𝐱0𝑖 )|2 ,                                  (8)        then gradually made the equations more complex, adding new tech­
+           𝑁0 𝑖=1
+                                                                                           niques on top of the previous techniques to solve the newly added
+                                       𝑁                          𝑁
+where residual points {𝐱𝑟𝑖 , 𝑡𝑖𝑟 }𝑖=1
+                                    𝑟
+                                      , boundary point {𝐱𝑏𝑖 , 𝑡𝑖𝑏 }𝑖=1
+                                                                     𝑏
+                                                                       , and initial       diﬃculties. First, the temperature in the equation must be positive, so
+            𝑁0                                                                             we added a positive constraint to the network output. Secondly, we an­
+point {𝐱0𝑖 }𝑖=1 are randomly sampled inside the region, boundary, and
+initial time respectively. 𝑁𝑟 , 𝑁𝑏 and 𝑁0 are the total number of resid­                   alyzed the boundary conditions, because only one edge has a Dirichlet
+ual points, boundary points, and initial points respectively. The network                  boundary condition for photons, and the other edges have Newman
+parameter 𝜃 is tuned by diﬀerent optimizers to minimize the total train­                   boundary conditions. The diﬀusion and exchange of temperature are
+ing loss 𝑡𝑜𝑡𝑎𝑙 (𝜃). The schematic diagram of PINNs’ algorithm is shown                    caused by the Dirichlet boundary condition, so it should be given the
+in Algorithm 1 in [31].                                                                    largest weight. We proposed a weight strategy suitable for the 2-D 3­
+                                                                                           T heat conduction equations. Then, we analyzed the initial conditions
+                                                                                           and found that the initial temperature was very low. In order to make
+3. Methodology
+                                                                                           the network learn the initial conditions well, we took the logarithm of
+                                                                                           the initial condition loss. Then, we analyzed the diﬃculties in the equa­
+    In this section, we first introduce PINNs to solve the 2-D 3-T heat con­
+                                                                                           tion. The equation has multi-scale diﬃculties, mainly due to 𝐴𝑒𝑖 , so we
+duction equations, and then we introduce our improved PINNs method
+                                                                                           ﬁrst solve the equation with a smaller 𝐴𝑒𝑖 , and then solve the equa­
+to solve them, we call our improved PINNs method 2D 3T PINNs.
+                                                                                           tion with a larger 𝐴𝑒𝑖 . In order to solve this diﬃculty, we introduced
+                                                                                           transfer learning. The equation also has strong nonlinear diﬃculties. In
+3.1. PINNs solves 2-D 3-T heat conduction equations
+                                                                                           order to enable the network to capture high-frequency information, we
+                                                                                           introduced Fourier feature embedding and added some Fourier feature
+    The total loss of PINNs to solve the 2-D 3-T heat conduction equa­                     inputs. In this subsection, we introduce the introduced techniques in
+tions is                                                                                   detail for each feature or diﬃculty and combine them with the original
+                                                                                           PINN to increase the expressive power of the original PINN. We refer to
+𝑡𝑜𝑡𝑎𝑙 (𝜃) = 𝑟 (𝜃) + 𝑏 (𝜃) + 0 (𝜃),                                          (9)
+                                                                                           our proposed new algorithm as 2D 3T PINNs. Fig. 2 is the architecture
+where                                                                                      of our 2D 3T PINNs.
+
+                                                                                       3
+X. Lei, T. Gu, X. Xu et al.                                                                                                   Computer Physics Communications 312 (2025) 109572
+
+
+
+
+                                                            Fig. 2. Schematic diagram of 2D 3T PINNs network architecture.
+
+
+3.2.1. Guaranteed positive constraint                                                         0𝑟 (𝜃) = 𝑀𝑆𝐸(𝑙𝑛(𝑢𝑇𝑟 (𝑡, 𝐱; 𝜃)), 𝑙𝑛(𝑇𝑟0 (𝑥, 𝑦))).
+   PINNs directly solve the 2-D 3-T heat conduction equations, and NaN
+will appear during the training process, making the training unable to                        3.2.4. Transfer learning
+continue. The reason is that the temperature calculated by PINNs will                             Transfer learning is a technique worth trying when the target task
+appear negative, and the equation needs to be squared to the temper­                          is similar to the source task. It is mainly divided into two stages. The
+ature, so NaN will appear. To address this issue, we propose the first                        ﬁrst stage is the pre-training stage, which is to train on a source task
+improved strategy to PINNs. We put a guaranteed positive constraint                           with a large amount of data to obtain a good set of initial parameters.
+on the output of the network, that is, 𝑙𝑛(1 + 𝑒𝑢(𝑡,𝐱;𝜃) ). After adding guar­                 The second stage is the model fine-tuning stage, which is to fine-tune
+anteed positive constraint to PINNs, PINNs can train, but there is no                         the model parameters on the target task. In [32], the author calls it
+accuracy in solving 2-D 3-T heat conduction equations. To solve the                           curriculum PINN regularization, which is used to solve 1D convection
+problem that the guaranteed positive PINNs cannot be trained to a rea­                        equations with diﬀerent 𝛽 . In the 2-D 3-T heat conduction equations, we
+sonable precision, we propose a weighting strategy.                                           found that as 𝐴𝑒𝑖 increases from 70 to 400, 2D 3T PINNs will encounter
+                                                                                              diﬃculties in solving, therefore, we combined transfer learning to suc­
+3.2.2. A weighting strategy                                                                   cessfully handle 𝐴𝑒𝑖 up to 400. Where we diﬀer from [32] is that we
+    The initial boundary value condition is a deﬁnite solution condition,                     reduce Adam’s initial learning rate by an order of magnitude during the
+so the initial boundary value losses should be given a relatively greater                     ﬁne-tuning phase. That is, when training 𝐴𝑒𝑖 = 70, Adam’s initial learn­
+weight than other losses. The temperature of electrons, ions, and pho­                        ing rate is 1 × 10−3 , when training 𝐴𝑒𝑖 = 400, in order to just fine-tune on
+tons is raised due to the Dirichlet boundary condition of photons on free                     the trained network, Adam’s initial learning rate is reduced to 1 × 10−4 .
+surfaces, so the Dirichlet boundary condition loss of photons on free sur­
+faces should be given a maximum weight.                                                       3.2.5. Fourier feature embedding
+    The total loss of 2D 3T PINNs to solve the 2-D 3-T heat conduction                            Fourier features network [33] can help alleviate the challenges as­
+equations is                                                                                  sociated with spectral bias, allowing neural networks to better capture
+                                                                                              and learn high-frequency information. We add some random Fourier
+𝑡𝑜𝑡𝑎𝑙 (𝜃) = 𝑟 (𝜃) + 𝑏 (𝜃) + 0 (𝜃),                                             (10)       features [34] cos(𝐁𝐱) and sin(𝐁𝐱) to the input, where 𝐁 ∈ ℝ𝑚×𝑑 each
+                                                                                              element is sampled from Gaussian distribution  (0, 1), in our ex­
+where                                                                                         periment, 𝑚 = 1000, generally, the larger 𝑚 is, the better the net­
+                                                                                              work trains, but the computational cost is higher. The diﬀerence be­
+𝑟 (𝜃) = 𝜆𝑟𝑒 𝑟𝑒 (𝜃) + 𝜆𝑟𝑖 𝑟𝑖 (𝜃) + 𝜆𝑟𝑟 𝑟𝑟 (𝜃),                                             tween us and [34] is that our input is (𝑡, 𝑥, 𝑦, cos(𝐁𝐱), sin(𝐁𝐱)), not
+                                                 ∑
+𝑏 (𝜃) = 𝜆𝑏𝑟𝑑 𝑏𝑟𝑑 (𝜃) ∣𝑓 𝑟𝑒𝑒 𝑠𝑢𝑟𝑓 𝑎𝑐𝑒𝑠 +𝜆𝑏𝑟𝑛                     𝑏𝑟𝑛 (𝜃)                    (cos(𝐁𝐱), sin(𝐁𝐱), cos(𝐁𝑡), sin(𝐁𝑡)).
+                                                    𝑟𝑖𝑔𝑖𝑑 𝑤𝑎𝑙𝑙𝑠                                   In summary, we use five techniques to improve the approximation
+                   ∑                       ∑                                                  capabilities of PINNs.
+           +𝜆𝑏𝑒𝑛         𝑏𝑒𝑛 (𝜃) + 𝜆𝑏𝑖𝑛        𝑏𝑖𝑛 (𝜃),
+                    𝜕Ω                     𝜕Ω
+                                                                                                 • The network output has added a positive-preserving constraint.
+0 (𝜃) = 𝜆0𝑒 0𝑒 (𝜃) + 𝜆0𝑖 0𝑖 (𝜃) + 𝜆0𝑟 0𝑟 (𝜃).                                                • The photon Dirichlet boundary condition gives the maximum
+The commonly used weighting strategy is 𝜆𝑏𝑟𝑑 > 𝜆0𝑒 = 𝜆0𝑖 = 𝜆0𝑟 > 𝜆𝑟𝑒 =                             weight, followed by the initial value weight.
+𝜆𝑟𝑖 = 𝜆𝑟𝑟 > 𝜆𝑏𝑟𝑛 = 𝜆𝑏𝑒𝑛 = 𝜆𝑏𝑖𝑛 , usually 𝜆𝑟𝑒 = 𝜆𝑟𝑖 = 𝜆𝑟𝑟 = 𝜆𝑏𝑟𝑛 = 𝜆𝑏𝑒𝑛 =                         • Logarithm of initial loss.
+𝜆𝑏𝑖𝑛 = 1.                                                                                        • Transfer learning.
+                                                                                                 • Fourier feature embedding.
+3.2.3. Logarithm of initial loss
+    In the experiment setup, we assume that the initial temperature is 3 ×                    4. Experimental setup
+10−4 , since the value is too small, even if there is an order of magnitude
+                                                                                                   Our PINNs algorithm is implemented based on the Pytorch frame­
+diﬀerence between the network predicted value and the initial value, the
+                                                                                              work [16]. All the numerical experiments were performed on a single
+loss is still very small. Therefore, we take the logarithm of the network
+                                                                                              GeForce RTX 3050 Laptop GPU.
+prediction value and the initial value respectively. If there is an order
+                                                                                                   In examples 2-5, the computational region is (𝑥, 𝑦) ∈ [0, 1] × [0, 1]
+of magnitude diﬀerence between the network prediction value and the
+                                                                                              and 𝑡 ∈ [0, 1]. The initial condition 𝑇 (0, 𝑥, 𝑦) = 3 × 10−4 for electrons,
+initial value, the loss will become relatively large. Speciﬁcally as shown
+                                                                                              ions and photons [10]. The upper boundary 𝑦 = 1 is a free surface, and
+in the following formula,
+                                                                                              the other three sides are rigid walls, on the free surface, 𝑇𝑟 = 3 × 10−4 +
+0𝑒 (𝜃) = 𝑀𝑆𝐸(𝑙𝑛(𝑢𝑇𝑒 (𝑡, 𝐱; 𝜃)), 𝑙𝑛(𝑇𝑒0 (𝑥, 𝑦))),                                             2𝑡. The domain is the same material, plastic foam (CH) or SiO2 . We
+                                                                                              enumerate some relevant physical parameters [12]. For each material,
+0𝑖 (𝜃) = 𝑀𝑆𝐸(𝑙𝑛(𝑢𝑇𝑖 (𝑡, 𝐱; 𝜃)), 𝑙𝑛(𝑇𝑖0 (𝑥, 𝑦))),                                             𝑐𝛼 , 𝛼 = 𝑒, 𝑖, 𝑟 is d­fined as follows:
+
+                                                                                          4
+X. Lei, T. Gu, X. Xu et al.                                                                                                                      Computer Physics Communications 312 (2025) 109572
+
+
+                                          Table 1
+                                          Physical parameter.
+
+                                                    𝜌          Γ𝑒    Γ𝑖     Γ𝑟             𝐴𝑒       𝐴𝑖          𝐴𝑟                𝛽        𝐴𝑒𝑖        𝐴𝑒𝑟
+                                           CH       1.1        45    70     0.007568       81       0.02        2.1𝑒2∕𝜌2          3.0      7000       79
+                                           SiO2     2.5        40    40     0.007568       60       0.00017     9.0𝑒2∕𝜌1.5        2.4      4000       140
+
+
+
+   Table 2                                                                                                               Table 3
+   Examples.                                                                                                             Test errors of 2D 3T PINNs method for Ex­
+                                                                                                                         ample 1 (float64).
+      Parameter       𝜔𝑒𝑖           𝐴𝑒𝑖   𝜔𝑒𝑟             𝐾𝑒          𝐾𝑖         𝐾𝑟
+                             −2∕3                −1∕2          5∕2         5∕2                                                          ‖𝑒‖2           ‖𝑒‖1         ‖𝑒‖∞
+      Example 2       𝐴𝑒𝑖 𝜌𝑇𝑒       70    𝐴𝑒𝑟 𝜌𝑇𝑒         𝐴𝑒 𝑇𝑒       𝐴𝑖 𝑇𝑖      𝐴𝑟
+      Example 3       𝐴𝑒𝑖 𝜌𝑇𝑒
+                             −2∕3
+                                    400   𝐴𝑒𝑟 𝜌𝑇𝑒
+                                                 −1∕2
+                                                          𝐴𝑒 𝑇𝑒
+                                                               5∕2
+                                                                      𝐴𝑖 𝑇𝑖
+                                                                           5∕2
+                                                                                 𝐴𝑟                                          𝑇𝑒         2.191e-02      1.185e-02    5.158e-02
+      Example 4       𝐴𝑒𝑖 𝜌𝑇𝑒
+                             −2∕3
+                                    400   𝐴𝑒𝑟 𝜌𝑇𝑒
+                                                 −1∕2
+                                                          𝐴𝑒 𝑇𝑒
+                                                               5∕2
+                                                                      𝐴𝑖 𝑇𝑖
+                                                                           5∕2
+                                                                                 𝐴𝑟 𝑇𝑟                                       𝑇𝑖         2.197e-02      1.189e-02    5.134e-02
+      Example 5       𝐴𝑒𝑖 𝜌𝑇𝑒
+                             −2∕3
+                                    700   𝐴𝑒𝑟 𝜌𝑇𝑒
+                                                 −1∕2
+                                                          𝐴𝑒 𝑇𝑒
+                                                               5∕2
+                                                                      𝐴𝑖 𝑇𝑖
+                                                                           5∕2
+                                                                                 𝐴𝑟 𝑇𝑟                                       𝑇𝑟         1.015e-02      9.929e-03    3.620e-02
+
+
+
+
+   𝑐𝑒 = 1.5Γ𝑒 , 𝑐𝑖 = 1.5Γ𝑖 , 𝑐𝑟 = 0.25Γ𝑟 .                                                           where 𝑢(𝑡𝑖 , 𝐱𝑖 ) is the real solution or the numerical solution, and
+Γ𝛼 and other physical parameter values are shown in Table 1.                                         𝑢(𝑡𝑖 , 𝐱𝑖 , 𝜃) is the predictive solution of the neural network. The 𝐿1 -norm
+    The hyperparameters of the PINNs algorithm are as follows: We are                                and 𝐿∞ -norm absolute error are d­fined as follows:
+using a fully connected neural network, adaptive activation functions
+                                                                                                                     𝑁
+are added to each layer of the network to speed up convergence (hy­                                           1 ∑|
+                                                                                                     ‖𝑒‖1 =          𝑢(𝑡 , 𝐱 , 𝜃) − 𝑢(𝑡𝑖 , 𝐱𝑖 )|| ,                                         (12)
+perparameter 𝑛 = 100) [35], the input is 3-dimensional vector (𝑡, 𝑥, 𝑦),                                      𝑁 𝑖=1 | 𝑖 𝑖
+and the output is 3-dimensional vector (𝑇𝑒 , 𝑇𝑖 , 𝑇𝑟 ), it has 6 hidden lay­
+ers, with 60 neurons in each layer. The number of initial training data                              ‖𝑒‖∞ = max ||𝑢(𝑡𝑖 , 𝐱𝑖 , 𝜃) − 𝑢(𝑡𝑖 , 𝐱𝑖 )|| .                                          (13)
+                                                                                                               1≤𝑖≤𝑁
+𝑁𝑖 = 800, the number of boundary training data 𝑁𝑏 = 800, the num­
+ber of collocation points 𝑁𝑓 = 4000. Initial boundary value training                                     The result of all the examples is an average of 5 independent runs. All
+points and collocation points are randomly sampled, using the Latin                                  examples require the use of the guaranteed positive constraint technique
+Hypercube Sampling strategy [36]. The test point is the central node                                 in Section 3.2.1. The following examples demonstrate the eﬀects of the
+of a 100 × 100 uniform grid, taking 4 moments, for a total of 4 × 104                                remaining four techniques in Section 3.2.
+points. We use two optimizers, Adam [37] and L-BFGS [38], to op­
+timize the loss function, and their maximum iterations are 6000 and                                  5.1. Example 1: for the case where there is an exact solution
+30000 respectively. The Adam optimizer uses an exponential learning
+rate decay strategy and uses default parameters for other parameters.                                   We first solve the 2-D 3-T heat conduction equations which have a
+The initial learning rate of exponential learning rate decay is 0.001,                               constructed exact solution.
+and the decay coeﬃcient is 0.999. The stop criteria used by L-BFGS                                           (          )(           )
+         |𝑀𝑆𝐸 𝑘 −𝑀𝑆𝐸 𝑘+1 |                                                                                          2
+are                              ≤ 10−16 , where 𝑀𝑆𝐸 𝑘 and 𝑀𝑆𝐸 𝑘+1 are the                           𝑇𝑒 = 𝑒−𝑡 𝑥2 − 𝑥3 3𝑦2 − 2𝑦3 + 1 + 𝑇𝑟 ∣𝑦=0 ,
+      𝑚𝑎𝑥(|𝑀𝑆𝐸 𝑘 |,|𝑀𝑆𝐸 𝑘+1 |,1)                                                                                    3
+previous and current iterations, respectively. The nonlinear activation                                      (          )(           )
+                                                                                                                   2
+function uses the hyper tangent function tanh. The initial parameters                                𝑇𝑖 = 𝑒−𝑡 𝑥2 − 𝑥3 3𝑦2 − 2𝑦3 + 1 + 𝑇𝑟 ∣𝑦=0 ,
+                                                                                                                   3
+of the neural network are randomly initialized using the Xavier scheme                                       (        )(           )
+                                                                                                     𝑇𝑟 = 𝑒−𝑡 2𝑦 − 𝑦2 3𝑥2 − 2𝑥3 + 1 + 𝑇𝑟 ∣𝑦=0 .
+[39].
+    To reproduce the numerical experiments of this study, after the pa­                                  Take 𝑇𝑟 ∣𝑦=0 = 0.5 (that’s the Dilliclet boundary condition for pho­
+per is accepted, the code will be made public at https://github.com/                                 tons at the lower boundary) and use 6000 Adam iterations and 30000
+programmer-lxj/2D3T-PINNs.                                                                           L-BFGS iterations. In this example, the diﬃculty comes mainly from two
+                                                                                                     aspects. Firstly, the residual loss is several orders of magnitude larger
+5. Numerical results                                                                                 than the other losses, secondly, the photon residual loss is two orders
+                                                                                                     of magnitude larger than the residual loss of electrons and ions. There­
+    Example 1 constructs the exact solution and the material parame­                                 fore, we hope that the residual loss can be reduced as much as possible,
+ter is SiO2 . In example 2, 3, 4 and 5, the larger the 𝐴𝑒𝑖 , the faster the                          while the residual loss of electrons, ions and photons can be kept at
+electron temperature and ion temperature exchange, and the larger the                                the same order of magnitude as possible, so our weight is chosen as
+𝐾𝑟 , the faster the photon temperature diﬀusion. The specific parameters                             𝜆𝑟𝑒 = 𝜆𝑟𝑖 = 100, 𝜆𝑟𝑟 = 1, 𝜆𝑏𝑟𝑑 = 1, 𝜆0𝑒 = 𝜆0𝑖 = 𝜆0𝑟 = 1. Fig. 3 shows the
+of examples 2, 3, 4 and 5 are shown in Table 2. The material param­                                  residual loss decline curve of 2D 3T PINNs with double precision. Fig. 4
+eter is CH. There is no exact solution, the numerical solution is used                               shows the results of 2D 3T PINNs at the time 𝑡 = 1. The first two lines
+as the reference solution and is calculated by the numerical program                                 are the exact solution and the predictive solution, the third line is the
+[10]. The time discretization uses the backward Euler scheme, while                                  point-by-point error, the first three columns represent electron, ion, and
+the spatial discretization employs a 5-point finite volume scheme. The                               photon temperatures, respectively. Table 3 shows the error of 2D 3T
+ﬁnal discretized nonlinear system of equations can be found in [10].                                 PINNs using double precision in the whole spatial-temporal domain. In
+The discretized nonlinear equations are solved using the Newton-Krylov                               our experiment, it is found that when 𝑇𝑟 is less than 0.5, 2D 3T PINNs
+method [40], with the linear solver being GMRES [41]. The KINSOL                                     can give a reasonable precision solution, and when 𝑇𝑟 is greater than 0.5,
+package [42] implements the above methods. The more detailed infor­                                  2D 3T PINNs cannot give a reasonable precision solution. Therefore, we
+mation about numerical solving can be found in [10]. To calculate the                                draw two conclusions: one is that the PINNs solution behavior varies
+error. The 𝐿2 -norm relative error is d­fined as follows:                                            with the exact solution construction; the other is that even if PINNs
+       √                                                                                             is improved to successfully solve the PDE constructed with exact solu­
+        ∑𝑁 |                              |2                                                         tions, the method may not be able to solve the PDE with only numerical
+         𝑖=1 |𝑢(𝑡𝑖 , 𝐱𝑖 , 𝜃) − 𝑢(𝑡𝑖 , 𝐱𝑖 )|
+‖𝑒‖2 =    √                                  ,                                           (11)        solutions. Therefore, we solve the 2-D 3-T heat conduction equations
+              ∑𝑁 |               |2
+                       𝑢(𝑡
+                𝑖=1 | 𝑖 𝑖 | , 𝐱 )                                                                    without constructing an exact solution in the following examples.
+
+                                                                                                5
+X. Lei, T. Gu, X. Xu et al.                                                                                       Computer Physics Communications 312 (2025) 109572
+
+
+
+
+                                                     Fig. 3. Example 1 residual loss decline curve (float64).
+
+
+
+
+Fig. 4. 2D 3T PINNs solves 2-D 3-T heat conduction equations with exact solutions of Example 1. (For interpretation of the colors in the figure(s), the reader is
+referred to the web version of this article.)
+
+
+5.2. Example 2: positive preservation and weighting                                 strategy. In the 2D 3T PINNs method, we take 𝜆𝑟𝑒 = 𝜆𝑟𝑖 = 𝜆𝑟𝑟 = 1,
+                                                                                    𝜆𝑏𝑟𝑑 = 1000, 𝜆0𝑒 = 𝜆0𝑖 = 𝜆0𝑟 = 10. Fig. 6 shows the experimental results
+    In our tests on diﬀerent parameters of the two-dimensional three­               of 2D 3T PINNs. The first two lines are the numerical solution and the
+temperature equation, we found that when 𝐴𝑒𝑖 increases, or the non­                 predictive solution, the third line is the point-by-point error, the first
+linearity of 𝐾𝑟 increases, it will be more diﬃcult to solve using PINNs.            three columns represent electron, ion, and photon temperatures, respec­
+Therefore, we first take 𝐴𝑒𝑖 to a smaller value of 70, and 𝐾𝑟 to be a               tively. The following figure has a similar meaning. Table 4 shows the
+constant 𝐴𝑟 to illustrate the eﬀect of 2D 3T PINNs¡¯ positive-preserving            average error of 2D 3T PINNs at 𝑡 = 1 × 10−5 , 0.3, 0.5, 0.7, 1. It can be
+techniques and weighting.                                                           seen that 2D 3T PINNs achieve the expected accuracy.
+    Since PINNs will have NaN during the training process, we first add                 First, use the positive-preserving technique so that the network can
+guaranteed positive constraint to the output of PINNs. In addition, when            be trained, and then add our weight strategy to achieve the desired accu­
+using single precision training, NaN will appear in the L-BFGS stage, so            racy. Our selection of weights is mainly based on two experiences: First,
+we use double precision training, and the following examples all use                after training for a certain number of iterations (for example, 4000 it­
+double precision. Fig. 5 shows the results of guaranteed positive PINNs             erations), the diﬀerence between each loss should not be too large and
+at the time 𝑡 = 1.                                                                  should be kept within one to two orders of magnitude, and then each
+    We can see that simple guaranteed positive PINNs can be trained,                loss At the same time it starts to fall. Second, after training, if the loss
+but it does not achieve the desired accuracy. Next, we add a weighted               of a certain item is too large, we will increase its weight.
+
+                                                                                6
+X. Lei, T. Gu, X. Xu et al.                                                          Computer Physics Communications 312 (2025) 109572
+
+
+
+
+                              Fig. 5. Example 2 guaranteed positive PINNs results.
+
+
+
+
+                                    Fig. 6. 2D 3T PINNs solution example 2.
+
+
+                                                       7
+X. Lei, T. Gu, X. Xu et al.                                                                                               Computer Physics Communications 312 (2025) 109572
+
+
+
+
+                                                                  Fig. 7. 2D 3T PINNs solution example 4.
+
+
+                      Table 4                                                                 Table 5
+                      Test errors of 2D 3T PINNs method for Ex­                               Compare the results w and w/o logarithmic loss, transfer learning
+                      ample 2.                                                                and learning rate reduction for Example 3.
+
+                              ‖𝑒‖2        ‖𝑒‖1        ‖𝑒‖∞                                                                    ‖𝑒𝑇𝑒 ‖2      ‖𝑒𝑇𝑖 ‖2       ‖𝑒𝑇𝑟 ‖2
+                        𝑇𝑒    1.446e-02   5.388e-03   1.684e-02                                 w/o logarithmic loss          NaN          NaN           NaN
+                        𝑇𝑖    7.902e-03   1.153e-03   3.742e-03                                 w/o transfer learning         9.995e-01    9.994e-01     9.626e-01
+                        𝑇𝑟    1.588e-02   1.436e-02   4.834e-02                                 w/o learning rate reduction   9.994e-01    9.995e-01     9.619e-01
+                                                                                                2D 3T PINNs                   8.730e-03    1.103e-02     3.349e-03
+
+
+5.3. Example 3: transfer learning
+                                                                                         logarithm of the initial condition loss and the photon Dilliclet boundary
+    As 𝐴𝑒𝑖 increases, the diﬃculty of solving using PINNs increases.                     condition loss, the weight of each loss is the same as in example 3. In
+When 𝐴𝑒𝑖 increases only slightly, such as from 70 to 400, transfer                       addition, we combined Fourier feature embedding technology. Fig. 7
+learning is a method worth trying. In this example, take the logarithm                   shows the experimental results of 2D 3T PINNs combined with Fourier
+of the initial condition loss and the photon Dilliclet boundary condi­                   feature embedding. Table 7 shows the average error of 2D 3T PINNs at
+tion loss, we take the weight as follows: 𝜆𝑟𝑒 = 𝜆𝑟𝑖 = 𝜆𝑟𝑟 = 1, 𝜆𝑏𝑟𝑑 = 20,                𝑡 = 1 × 10−5 , 0.3, 0.5, 0.7, 1.
+𝜆0𝑒 = 𝜆0𝑖 = 𝜆0𝑟 = 10. In addition, we combined transfer learning, that                       Table 8 shows the eﬀects of removing the logarithmic loss tech­
+is, we first solved 𝐴𝑒𝑖 = 70 (Adam’s initial learning rate is 1 × 10−3 ),                nique and removing Fourier feature embedding. It can be seen from
+and used the trained network as the initial network parameters of                        Table 8 that removing the logarithmic loss technique can also achieve
+𝐴𝑒𝑖 = 400 to train 𝐴𝑒𝑖 = 400 (Adam’s initial learning rate is 1 × 10−4 ).                the desired accuracy in this example, but adding it will result in higher
+Fig. 8 shows the experimental results of 2D 3T PINNs combined with                       accuracy. Therefore, both techniques are eﬀective.
+transfer learning. Table 6 shows the average error of 2D 3T PINNs at
+𝑡 = 1 × 10−5 , 0.3, 0.5, 0.7, 1.                                                         5.5. Example 5: transfer learning and Fourier feature embedding
+    Table 5 shows the eﬀects of removing the logarithmic loss technique,
+removing transfer learning and not reducing the second-stage learning                        In order to find the solvable range of 𝐴𝑒𝑖 and 𝐾𝑟 for our current
+rate. It can be seen from the results that all three techniques need to be               2D 3T PINNs, we did a lot of testing. The parameter range that can
+used.                                                                                    currently be solved is: 𝐴𝑒𝑖 ≤ 700, 𝐾𝑟 = 𝐴𝑟 𝑇𝑟 . In this example, we used
+                                                                                         all five of our techniques. The weight of each loss is the same as in
+5.4. Example 4: Fourier feature embedding                                                example 3. Transfer learning first trains 𝐴𝑒𝑖 = 70 (Adam’s initial learning
+                                                                                         rate is 1 × 10−3 ), then trains 𝐴𝑒𝑖 = 400 (Adam’s initial learning rate is
+    As the nonlinearity of 𝐾𝑟 increases, the diﬃculty of solving using                   1 × 10−4 ), and finally trains 𝐴𝑒𝑖 = 700 (Adam’s initial learning rate is
+PINNs increases. When the nonlinearity of 𝐾𝑟 increases slightly, such                    1 × 10−4 ). Fig. 9 shows the experimental results of 2D 3T PINNs using
+as from 𝐴𝑟 to 𝐴𝑟 𝑇𝑟 , adding more high-frequency information, Fourier                    ﬁve techniques. Table 9 shows the average error of 2D 3T PINNs at
+feature embedding is a method worth trying. In this example, take the                    𝑡 = 1 × 10−5 , 0.3, 0.5, 0.7, 1.
+
+                                                                                     8
+X. Lei, T. Gu, X. Xu et al.                                             Computer Physics Communications 312 (2025) 109572
+
+
+
+
+                              Fig. 8. 2D 3T PINNs solution example 3.
+
+
+
+
+                              Fig. 9. 2D 3T PINNs solution example 5.
+
+
+                                                 9
+X. Lei, T. Gu, X. Xu et al.                                                                                        Computer Physics Communications 312 (2025) 109572
+
+
+                      Table 6                                                                  Table 11
+                      Test errors of 2D 3T PINNs method for Ex­                                Time comparison between numerical solution and 2D
+                      ample 3.                                                                 3T PINNs.
+
+                              ‖𝑒‖2        ‖𝑒‖1        ‖𝑒‖∞                                       numerical solution time                  2588.4(s)
+
+                        𝑇𝑒    8.730e-03   2.471e-03   6.884e-03                                  2D 3T PINNs first phase training time    7787.4(s)
+                        𝑇𝑖    1.103e-02   2.536e-03   6.175e-03                                  2D 3T PINNs second phase training time   7553.4(s)
+                        𝑇𝑟    3.349e-03   2.406e-03   1.301e-02                                  2D 3T PINNs third phase training time    7482.4(s)
+                                                                                                 Total training time of 2D 3T PINNs       22823.2(s)
+                                                                                                 2D 3T PINNs inference time               0.005(s)
+                      Table 7
+                      Test errors of 2D 3T PINNs method for Ex­
+                      ample 4.
+
+                              ‖𝑒‖2        ‖𝑒‖1        ‖𝑒‖∞
+                        𝑇𝑒    1.781e-02   4.631e-03   1.812e-02
+                        𝑇𝑖    2.192e-02   4.515e-03   1.589e-02
+                        𝑇𝑟    9.195e-03   7.101e-03   3.225e-02
+
+
+
+     Table 8
+     Compare the results w and w/o logarithmic loss and Fourier feature
+     embedding for Example 4.
+
+                                          ‖𝑒𝑇𝑒 ‖2     ‖𝑒𝑇𝑖 ‖2     ‖𝑒𝑇𝑟 ‖2
+        w/o logarithmic loss              3.644e-02   4.315e-02   2.467e-02
+                                                                                                       Fig. 10. 2D 3T PINNs solution region.
+        w/o Fourier feature embedding     6.830e-02   6.262e-02   6.898e-02
+        2D 3T PINNs                       1.781e-02   2.192e-02   9.195e-03                    Table 12
+                                                                                               Inversion density of 2D 3T PINNs with diﬀerent ini­
+                                                                                               tial values.
+                      Table 9
+                      Test errors of 2D 3T PINNs method for Ex­                                                                 0.5         1
+                      ample 5.                                                                   Actual value                   1.1         1.1
+                                                                                                 2D 3T PINNs predicted value    1.11737     1.11717
+                              ‖𝑒‖2        ‖𝑒‖1        ‖𝑒‖∞
+                        𝑇𝑒    1.485e-02   8.224e-03   1.547e-02
+                        𝑇𝑖    1.738e-02   8.504e-03   1.552e-02                    2D 3T PINNs cannot solve it to a reasonable precision, the phenomenon
+                        𝑇𝑟    4.216e-03   7.507e-03   1.370e-02
+                                                                                   we observed is that multiple losses cannot be reduced to less than 10−2
+                                                                                   at the same time, and co­flicts will occur between multiple losses. When
+     Table 10                                                                      𝐾𝑟 = 𝐴𝑟 𝑇𝑟3+𝛽 or 𝐴𝑒𝑖 > 700, 2D 3T PINNs cannot solve, we guess that the
+     Compare the results w and w/o transfer learning and Fourier feature           possible reason is that the diﬀerence between multiple losses is larger,
+     embedding for Example 5.                                                      which makes the optimization algorithm more diﬃcult to optimize, and
+                                                                                   more technology need to be introduced. The current range that 2D 3T
+                                          ‖𝑒𝑇𝑒 ‖2     ‖𝑒𝑇𝑖 ‖2     ‖𝑒𝑇𝑟 ‖2
+                                                                                   PINNs can solve is shown in Fig. 10.
+        w/o transfer learning             6.283e-02   5.921e-02   8.237e-02
+        w/o Fourier feature embedding     9.446e-01   9.370e-01   9.796e-01
+        2D 3T PINNs                       1.485e-02   1.738e-02   4.216e-03
+                                                                                   5.6. Example 6: data-driven discovery of partial diﬀerential equations
+
+                                                                                       In this example, we use 2D 3T PINNs to solve the inverse prob­
+    Table 10 shows the eﬀects of removing transfer learning and re­                lem of the 2-D 3-T heat conduction equations. Suppose we have some
+moving Fourier feature embedding. The method of removing transfer                  data points, but the density 𝜌 is unknown in the equations. We use the
+learning shows obvious diﬀerences between the predicted solution and               equation parameter setting of Example 2. Diﬀerent from Example 2, we
+the reference solution on the image. It can be seen from the results that          added reference solutions at five moments, 1 × 10−5 , 0.3, 0.5, 0.7, and
+all five techniques need to be used.                                               1, as supervision data in the training data of 2D 3T PINNs, taking 100
+    Table 11 gives the numerical solution time, 2D 3T PINNs training and           points at each moment, and taking the density 𝜌 as a trainable parame­
+inference time. The training time of the three stages of 2D 3T PINNs               ter of the network. We added five moments of supervised losses to the
+refers to the time of training 𝐴𝑒𝑖 = 70, 𝐴𝑒𝑖 = 400, and 𝐴𝑒𝑖 = 700, re­             loss function, all with a weight of 1000, and the weights of the remain­
+spectively. The grid size of the numerical program is 80 × 80, and the             ing losses are the same as in Example 2.
+nonlinear residual of each iteration step is less than 10−3 . We make the              Table 12 shows the density values predicted by 2D 3T PINNs when
+number of points of 2D 3T PINNs the same as the grid size of the nu­               using 0.5 and 1 as the initial value respectively. The relative errors be­
+merical program, 4000 residual points, and the initial boundary value              tween them and the true values are 1.579% and 1.561% respectively. It
+points are 1200. The stopping criterion of 2D 3T PINNs is that the resid­          can be seen that the 2D 3T PINNs inversion density has achieved the
+ual of the governing equation is less than 10−3 . 2D 3T PINNs takes a long         desired accuracy. Fig. 11 shows the predicted values at time 𝑡 = 1. It
+time to train, but the inference time is very short. After the network is          can be seen that 2D 3T PINNs not only successfully inverts the density
+trained, the prediction results of any point at any time can be quickly            value, but the solution predicted by the trained network at time 𝑡 = 1
+inferred. The numerical method only obtains approximate solutions on               also achieves the expected accuracy.
+grid points. For approximate solutions of non-grid points, interpolation
+is required, or the grid must be reconstructed and recalculated.                   6. Conclusions and future work
+    At present, the range of parameters we can solve is that 𝐾𝑟 = 𝐴𝑟 𝑇𝑟 ,
+𝐴𝑒𝑖 = 700, and other parameters are the actual application parameters.                 We explore using PINNs to solve the 2-D 3-T heat conduction equa­
+If the nonlinearity of 𝐾𝑟 is further enhanced, or 𝐴𝑒𝑖 > 700, the current           tions with strong nonlinearity and multi-scale. Even for 2-D 3-T heat
+
+                                                                              10
+X. Lei, T. Gu, X. Xu et al.                                                                                            Computer Physics Communications 312 (2025) 109572
+
+
+
+
+                                                         Fig. 11. 2D 3T PINNs solution example 6.
+
+
+conduction equations with simple parameters, PINNs cannot achieve                  CRediT authorship contribution statement
+the desired accuracy. According to the diﬃculties encountered in the
+process of solving, we combine five techniques - positive constraint,                  Xiaojun Lei: Writing -- original draft, Visualization, Validation, Soft­
+weighted strategy, logarithmic initial value loss, transfer learning and           ware, Methodology. Tongxiang Gu: Writing -- review & editing, Super­
+Fourier feature embedding, and propose our new method 2D 3T PINNs.                 vision, Methodology, Formal analysis, Conceptualization. Xiaowen Xu:
+The most complex parameter range that 2D 3T PINNs can solve at                     Project administration, Formal analysis. Hengbin An: Resources, Inves­
+present is 𝐾𝑟 = 𝐴𝑟 𝑇𝑟 , 𝐴𝑒𝑖 ≤ 700, and the remaining parameters are prac­          tigation, Data curation. Yanzhong Yao: Project administration, Formal
+tical application parameters. The relative 𝐿2 -norm error and 𝐿∞ -norm             analysis, Conceptualization.
+error are on the order of 10−2 − 10−3 in the case where it is currently
+solvable.                                                                          Declaration of competing interest
+    From our experiments, we summarized several experiences: For the
+output to be non-negative, positivity constraints are necessary; Weights               I have nothing to declare.
+are very important, good weights can eﬀectively reduce multiple losses,
+and the initial boundary value weight should be given a relatively large           Acknowledgements
+weight; When the initial value condition is very small, logarithmic initial
+value loss can make the loss of initial conditions smaller, thereby making             The work was partially supported by the National Science Founda­
+the solution prediction more accurate at the initial moment; As can be             tion of China (12271055 and 62032023) and the foundation of CAEP
+seen from Example 3, when a parameter in the PDE changes within a                  (CX20210044). Also the following funding source is acknowledged:
+certain range (the range is related to the problem), that is, the equation         Foundation of the Key Laboratory of Computational Physics, China.
+multi-scale enhancement, transfer learning is eﬀective; As can be seen
+from Example 4, Fourier feature embedding is helpful to the nonlinear              Appendix A. Supplementary material
+enhancement of equations and multi-scale enhancement; As can be seen
+from Example 5, for diﬃcult problems with stronger nonlinearity and                   Supplementary material related to this article can be found online at
+stronger multi-scale, combinatorial techniques are necessary.                      https://doi.org/10.1016/j.cpc.2025.109572.
+                                                                       3+𝛽
+    For the future work, we hope to successfully solve for 𝐾𝑟 = 𝐴𝑟 𝑇𝑟
+and 𝐴𝑒𝑖 = 7000. We have also tried several methods of adaptive weight,             Data availability
+but have not achieved good results so far. We will continue to ex­
+plore in the future, hoping to use adaptive methods to balance multiple                Data will be made available on request.
+losses. We plan to use PINNs to provide initial values for the non-exact
+Newton method for the 2-D 3-T heat conduction equations. For the                   References
+multi-material 2-D 3-T heat conduction equations, we plan to use PINNs
+                                                                                    [1] J. Lamarsh, Introduction to Nuclear Reactor Theory, American Nuclear Society,
+combined with domain decomposition to solve, on the one hand, it may
+                                                                                        2002.
+be more accurate, on the other hand, it can be accelerated. We are also             [2] J.D. Lindl, W.C. Mead, Two-dimensional simulation of fluid instability in laser-fusion
+going to use PINNs to solve the 3-D 3-T heat conduction equations.                      pellets, Phys. Rev. Lett. 34 (20) (1975) 1273.
+
+
+                                                                              11
+X. Lei, T. Gu, X. Xu et al.                                                                                                              Computer Physics Communications 312 (2025) 109572
+
+
+ [3] K. Lan, Dream fusion in octahedral spherical hohlraum, Matter Radiat. Extrem. 7 (5)            [24] S. Cai, Z. Wang, S. Wang, P. Perdikaris, G.E. Karniadakis, Physics-informed neural
+     (2022) 055701.                                                                                      networks for heat transfer problems, J. Heat Transf. 143 (6) (2021) 060801.
+ [4] Y. Chen, Z. Li, H. Cao, K. Pan, S. Li, X. Xie, B. Deng, Q. Wang, Z. Cao, L. Hou, et            [25] V.A. Es’kin, D.V. Davydov, E.D. Egorova, A.O. Malkhanov, M.A. Akhukov, M.E.
+     al., Determination of laser entrance hole size for ignition-scale octahedral spherical              Smorkalov, About optimal loss function for training physics-informed neural net­
+     hohlraums, Matter Radiat. Extrem. 7 (6) (2022) 065901.                                              works under respecting causality, arXiv preprint, arXiv:2304.02282, 2023.
+ [5] S. Fu, H. Fu, L. Shen, A nine-point diﬀerence scheme for the two-dimensional equa­             [26] X. Jin, S. Cai, H. Li, G.E. Karniadakis, Nsfnets (Navier-Stokes flow nets): physics­
+     tions of heat conduction with three-temperature, J. Numer. Methods Comput. Appl.                    informed neural networks for the incompressible Navier-Stokes equations, J. Com­
+     3 (1999) 237--240.                                                                                  put. Phys. 426 (2021) 109951.
+ [6] C. Enaux, S. Guisset, C. Lasuen, Q. Ragueneau, Numerical resolution of a three tem­            [27] J. Guo, Y. Yao, H. Wang, T. Gu, Pre-training strategy for solving evolution equations
+     perature plasma model, J. Sci. Comput. 82 (3) (2020) 51.                                            based on physics-informed neural networks, J. Comput. Phys. 489 (2023) 112258.
+ [7] C. Sijoy, S. Chaturvedi, TRHD: three-temperature radiation-hydrodynamics code                  [28] Q. Zhang, X. Guo, X. Chen, C. Xu, J. Liu, Pin­-ffht: a physics-informed neural network
+     with an implicit non-equilibrium radiation transport using a cell-centered monotonic                for solving fluid flow and heat transfer problems without simulation data, Int. J. Mod.
+     ﬁnite volume scheme on unstructured-grids, Comput. Phys. Commun. 190 (2015)                         Phys. C 33 (12) (2022) 2250166.
+     98--119.                                                                                       [29] D. Jalili, S. Jang, M. Jadidi, G. Giustini, A. Keshmiri, Y. Mahmoudi, Physics-informed
+ [8] G. Peng, Z. Gao, W. Yan, X. Feng, A positivity-preserving finite volume scheme for                  neural networks for heat transfer prediction in two-phase flows, Int. J. Heat Mass
+     three-temperature radiation diﬀusion equations, Appl. Numer. Math. 152 (2020)                       Transf. 221 (2024) 125089.
+     125--140.                                                                                      [30] P. Adam, G. Sam, C. Soumith, C. Gregory, Y. Edward, D. Zachary, L. Zeming, D.
+ [9] X. Xu, Z. Mo, H. An, Algebraic two-level iterative method for 2-D 3-T radiation dif­                Alban, A. Luca, L. Adam, et al., Automatic diﬀerentiation in pytorch, in: Proceedings
+     fusion equations, Chin. J. Comput. Phys. 26 (2009) 1--8.                                            of Neural Information Processing Systems, vol. 5, 2017.
+[10] H. An, Z. Mo, X. Xu, X. Liu, On choosing a nonlinear initial iterate for solving the           [31] G.E. Karniadakis, I.G. Kevrekidis, L. Lu, P. Perdikaris, S. Wang, L. Yang, Physics­
+     2-D 3-T heat conduction equations, J. Comput. Phys. 228 (9) (2009) 3268--3287.                      informed machine learning, Nat. Rev. Phys. 3 (6) (2021) 422--440.
+[11] Z. Mo, S. Fu, L. Shen, Parallel Lagrange numerical simulations for 2-dimension three           [32] A. Krishnapriyan, A. Gholami, S. Zhe, R. Kirby, M.W. Mahoney, Characterizing pos­
+     temperature hydrodynamics, Chin. J. Comput. Phys. 17 (6) (2000) 8.                                  sible failure modes in physics-informed neural networks, Adv. Neural Inf. Process.
+[12] Z. Mo, L. Shen, G. Wittum, Parallel adaptive multigrid algorithm for 2-D 3-T diﬀusion               Syst. 34 (2021) 26548--26560.
+     equations, Int. J. Comput. Math. 81 (3) (2004) 361--374.                                       [33] M. Tancik, P. Srinivasan, B. Mildenhall, S. Fridovich-Keil, N. Raghavan, U. Singhal, R.
+[13] A.R. Barron, Universal approximation bounds for superpositions of a sigmoidal func­
+                                                                                                         Ramamoorthi, J. Barron, R. Ng, Fourier features let networks learn high frequency
+     tion, IEEE Trans. Inf. Theory 39 (3) (1993) 930--945.
+                                                                                                         functions in low dimensional domains, Adv. Neural Inf. Process. Syst. 33 (2020)
+[14] H. Lee, I.S. Kang, Neural algorithm for solving diﬀerential equations, J. Comput.
+                                                                                                         7537--7547.
+     Phys. 91 (1) (1990) 110--131.
+                                                                                                    [34] S. Wang, H. Wang, P. Perdikaris, On the eigenvector bias of Fourier feature networks:
+[15] I.E. Lagaris, A. Likas, D.I. Fotiadis, Art­ficial neural networks for solving ordinary
+                                                                                                         from regression to solving multi-scale pdes with physics-informed neural networks,
+     and partial diﬀerential equations, IEEE Trans. Neural Netw. 9 (5) (1998) 987--1000.
+                                                                                                         Comput. Methods Appl. Mech. Eng. 384 (2021) 113938.
+[16] A. Paszke, S. Gross, F. Massa, A. Lerer, J. Bradbury, G. Chanan, T. Killeen, Z. Lin, N.
+                                                                                                    [35] A.D. Jagtap, K. Kawaguchi, G.E. Karniadakis, Adaptive activation functions accel­
+     Gimelshein, L. Antiga, A. Desmaison, A. Köpf, E. Yang, Z. DeVito, M. Raison, A. Te­
+                                                                                                         erate convergence in deep and physics-informed neural networks, J. Comput. Phys.
+     jani, S. Chilamkurthy, B. Steiner, L. Fang, J. Bai, S. Chintala, Pytorch: An Imperative
+                                                                                                         404 (2020) 109136.
+     Style, High-Performance Deep Learning Library, 2019, pp. 8026--8037.
+                                                                                                    [36] M. Stein, Large sample properties of simulations using Latin hypercube sampling,
+[17] M. Abadi, P. Barham, J. Chen, Z. Chen, A. Davis, J. Dean, M. Devin, S. Ghemawat,
+                                                                                                         Technometrics 29 (2) (1987) 143--151.
+     G. Irving, M. Isard, M. Kudlur, J. Levenberg, R. Monga, S. Moore, D.G. Murray, B.
+                                                                                                    [37] D. Kingma, J. Ba, Adam: a method for stochastic optimization, in: International Con­
+     Steiner, P. Tucker, V. Vasudevan, P. Warden, M. Wicke, Y. Yu, X. Zheng, Tenso­flow:
+                                                                                                         ference on Learning Representations (ICLR), 2015.
+     A System for Large-Scale Machine Learning, 2016, pp. 265--283.
+                                                                                                    [38] R.H. Byrd, P. Lu, J. Nocedal, C. Zhu, A limited memory algorithm for bound con­
+[18] Y. Ma, D. Yu, T. Wu, H. Wang, PaddlePaddle: an open-source deep learning platform
+                                                                                                         strained optimization, SIAM J. Sci. Comput. 16 (5) (1995) 1190--1208.
+     from industrial practice, Front. Data Comput. 1 (1) (2019) 105--115.
+                                                                                                    [39] X. Glorot, Y. Bengio, Understanding the diﬃculty of training deep feedforward neu­
+[19] M. Raissi, P. Perdikaris, G.E. Karniadakis, Physics-informed neural networks: a deep
+                                                                                                         ral networks, in: Proceedings of the Thirteenth International Conference on Art­fi­
+     learning framework for solving forward and inverse problems involving nonlinear
+                                                                                                         cial Intelligence and Statistics, JMLR Workshop and Conference Proceedings, 2010,
+     partial diﬀerential equations, J. Comput. Phys. 378 (2019) 686--707.
+[20] R. Laubscher, Simulation of multi-species flow and heat transfer using physics­                     pp. 249--256.
+     informed neural networks, Phys. Fluids 33 (8) (2021).                                          [40] P.N. Brown, Y. Saad, Hybrid Krylov methods for nonlinear systems of equations,
+[21] L. Zhang, W. Ma, Q. Lou, J. Zhang, Simulation of rarefied gas flows using physics­                  SIAM J. Sci. Stat. Comput. 11 (3) (1990) 450--481.
+     informed neural network combined with discrete velocity method, Phys. Fluids                   [41] Y. Saad, M.H. Schultz, Gmres: a generalized minimal residual algorithm for solving
+     35 (7) (2023).                                                                                      nonsymmetric linear systems, SIAM J. Sci. Stat. Comput. 7 (3) (1986) 856--869.
+[22] S. Mishra, R. Molinaro, Physics informed neural networks for simulating radiative              [42] A.M. Collier, A.C. Hindmarsh, R. Serban, C.S. Woodward, User Documentation for
+     transfer, J. Quant. Spectrosc. Radiat. Transf. 270 (2021) 107705.                                   Kinsol v2. 6.0, Center for Applied Scientific Computing, Lawrence Livermore Na­
+[23] Z. Mao, A.D. Jagtap, G.E. Karniadakis, Physics-informed neural networks for high­                   tional Laboratory, 2009.
+     speed flows, Comput. Methods Appl. Mech. Eng. 360 (2020) 112789.
+
+
+
+
+                                                                                               12
+
