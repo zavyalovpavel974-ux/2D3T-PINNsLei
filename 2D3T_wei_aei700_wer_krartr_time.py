@@ -23,6 +23,16 @@ import time
 import matplotlib.gridspec as gridspec
 
 
+def parse_transfer_stages(value):
+    stages = []
+    for raw in value.split(','):
+        raw = raw.strip()
+        if raw:
+            stages.append(int(float(raw)))
+    if not stages:
+        raise ValueError("--transfer-stages must contain at least one stage")
+    return stages
+
 
 #种子要改回去!!!
 np.random.seed(12)
@@ -270,7 +280,7 @@ if __name__ == "__main__":
    
     train_time=0
     stage_training_times = {}
-    transfer_stages = [70,400,700]
+    transfer_stages = parse_transfer_stages(repro_args.transfer_stages)
     resume_checkpoint_for_stage = repro_args.resume_checkpoint
     resume_stage = repro_args.resume_stage
     if resume_checkpoint_for_stage and resume_stage is None:
@@ -445,6 +455,27 @@ if __name__ == "__main__":
         print('save img failed')
         plt.show()
     plt.close()  # 这是关闭绘图区，自己查看我打算画在一张图上了
+
+    if repro_args.skip_metrics:
+        repro_metrics = {
+            "metrics_available": False,
+            "reason": "skipped because matching reference text files are not available for this case",
+            "transfer_stages": transfer_stages,
+            "final_stage": transfer_stages[-1],
+            "kr_mode": repro_args.kr_mode,
+            "use_ff": bool(repro_args.use_ff),
+            "use_log_loss": bool(repro_args.use_log_loss),
+            "lambda_brd": float(repro_args.lambda_brd),
+            "lambda_init": float(repro_args.lambda_init),
+            "total_training_time_seconds": float(train_time),
+            "stage_training_time_seconds": stage_training_times,
+        }
+        if repro_args.metrics_json:
+            os.makedirs(os.path.dirname(repro_args.metrics_json) or ".", exist_ok=True)
+            with open(repro_args.metrics_json, "w", encoding="utf-8") as f:
+                json.dump(repro_metrics, f, indent=2)
+            print("[repro] wrote metrics stub: %s" % repro_args.metrics_json)
+        sys.exit(0)
     
     
     # #PINN给2d3t初始值

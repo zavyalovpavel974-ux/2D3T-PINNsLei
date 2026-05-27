@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_RUN_ROOT = ROOT / "runs"
 PROTECTED_RUN_NAMES = {"overnight_current"}
 EXAMPLE5_STAGES = (70, 400, 700)
+INVERSE_CASES = {"example2", "example6"}
+FORWARD_CASES = {"example3", "example4", "example5"}
 PAPER = {
     "example2": {
         "Te": {"L2": 1.446e-2, "L1": 5.388e-3, "Linf": 1.684e-2},
@@ -197,7 +199,23 @@ def collect_run_status(run_dir: Path) -> dict[str, Any]:
         "figures_exists": figures.exists(),
         "cases": {},
     }
-    for case in ("example2", "example5"):
+    def has_case_artifacts(case_name: str) -> bool:
+        return any(
+            path.exists()
+            for path in (
+                reports / f"{case_name}_metrics.json",
+                logs / f"{case_name}.stdout.log",
+                checkpoints / case_name / "latest.pt",
+            )
+        )
+
+    cases_to_report = []
+    for candidate in ("example2", "example6", "example3", "example4", "example5"):
+        if has_case_artifacts(candidate):
+            cases_to_report.append(candidate)
+    if not cases_to_report:
+        cases_to_report = ["example6", "example5"]
+    for case in cases_to_report:
         stdout_log = logs / f"{case}.stdout.log"
         checkpoint = checkpoints / case / "latest.pt"
         metrics = reports / f"{case}_metrics.json"
@@ -213,14 +231,15 @@ def collect_run_status(run_dir: Path) -> dict[str, Any]:
                 parsed = json.loads(metrics.read_text(encoding="utf-8"))
                 case_status["metrics_case"] = parsed.get("case")
                 case_status["aggregate"] = parsed.get("aggregate")
-                if case == "example2":
+                if case in INVERSE_CASES:
                     case_status["rho"] = parsed.get("rho")
                     case_status["rho_rel_error"] = parsed.get("rho_rel_error")
+                    case_status["rho_init"] = parsed.get("rho_init")
                 if case == "example5":
                     case_status["inference_time_seconds"] = parsed.get("inference_time_seconds")
             except Exception as exc:
                 case_status["metrics_read_error"] = str(exc)
-        if case == "example5":
+        if case in FORWARD_CASES:
             case_status["stage"] = infer_example5_checkpoint_stage(checkpoint, stdout_log)
         else:
             case_status["stage"] = "inverse"
@@ -250,7 +269,9 @@ def format_status(status: dict[str, Any]) -> str:
             f"  stdout: {case_status['stdout']['path']} ({'exists' if case_status['stdout']['exists'] else 'missing'})",
             f"  stderr: {case_status['stderr']['path']} ({'exists' if case_status['stderr']['exists'] else 'missing'})",
         ]
-        if case == "example2" and "rho" in case_status:
+        if case in INVERSE_CASES and "rho" in case_status:
+            if case_status.get("rho_init") is not None:
+                lines.append(f"  rho_init: {case_status['rho_init']}")
             lines.append(f"  rho: {case_status['rho']}")
         if case == "example5" and "inference_time_seconds" in case_status:
             lines.append(f"  inference_time_seconds: {case_status['inference_time_seconds']}")
@@ -270,13 +291,15 @@ def build_case_command(
     case: str,
     max_walltime: float,
     max_iter_override: int | None,
+    rho_init: float,
+    seed: int,
 ) -> tuple[list[str], Path, Path, Path]:
-    if case == "example2":
+    if case in INVERSE_CASES:
         script = "2D3T_wei_aei70_wer_krar_inverse.py"
-        metrics = reports / "example2_metrics.json"
-    elif case == "example5":
+        metrics = reports / f"{case}_metrics.json"
+    elif case in FORWARD_CASES:
         script = "2D3T_wei_aei700_wer_krartr_time.py"
-        metrics = reports / "example5_metrics.json"
+        metrics = reports / f"{case}_metrics.json"
     else:
         raise ValueError(case)
 
@@ -291,12 +314,20 @@ def build_case_command(
         "--metrics-json",
         str(metrics),
     ]
+    if case in INVERSE_CASES:
+        cmd += ["--rho-init", str(rho_init), "--seed", str(seed)]
+    elif case == "example3":
+        cmd += ["--transfer-stages", "70,400", "--kr-mode", "constant", "--no-use-ff", "--use-log-loss", "--lambda-brd", "20", "--lambda-init", "10", "--skip-metrics"]
+    elif case == "example4":
+        cmd += ["--transfer-stages", "70,400", "--kr-mode", "linear_tr", "--use-ff", "--use-log-loss", "--lambda-brd", "20", "--lambda-init", "10", "--skip-metrics"]
+    elif case == "example5":
+        cmd += ["--transfer-stages", "70,400,700", "--kr-mode", "linear_tr", "--use-ff", "--use-log-loss", "--lambda-brd", "20", "--lambda-init", "10"]
     latest = checkpoints_root / case / "latest.pt"
     stdout_path = logs / f"{case}.stdout.log"
     stderr_path = logs / f"{case}.stderr.log"
     if latest.exists():
         cmd += ["--resume-checkpoint", str(latest)]
-        if case == "example5":
+        if case in FORWARD_CASES:
             resume_stage = infer_example5_resume_stage(latest, stdout_path)
             if resume_stage is not None:
                 cmd += ["--resume-stage", str(resume_stage)]
@@ -307,7 +338,15 @@ def build_case_command(
     return cmd, stdout_path, stderr_path, metrics
 
 
-def run_case(run_dir: Path, workdir: Path, case: str, max_walltime: float, max_iter_override: int | None) -> dict[str, Any]:
+def run_case(
+    run_dir: Path,
+    workdir: Path,
+    case: str,
+    max_walltime: float,
+    max_iter_override: int | None,
+    rho_init: float,
+    seed: int,
+) -> dict[str, Any]:
     logs = run_dir / "logs"
     reports = run_dir / "reports"
     checkpoints_root = run_dir / "checkpoints"
@@ -317,7 +356,7 @@ def run_case(run_dir: Path, workdir: Path, case: str, max_walltime: float, max_i
 
     latest = checkpoints_root / case / "latest.pt"
     cmd, stdout_path, stderr_path, metrics = build_case_command(
-        checkpoints_root, reports, logs, case, max_walltime, max_iter_override
+        checkpoints_root, reports, logs, case, max_walltime, max_iter_override, rho_init, seed
     )
 
     env = os.environ.copy()
@@ -401,21 +440,33 @@ def write_report(run_dir: Path, inputs: list[dict[str, Any]], results: list[dict
         ]
         if result["metrics"]:
             metrics = json.loads(Path(result["metrics"]).read_text(encoding="utf-8"))
-            if result["case"] == "example2":
+            if result["case"] in INVERSE_CASES:
                 rho = metrics.get("rho")
                 lines += [
-                    "Table 12 density inversion:",
+                    "Example 6 Table 12 density inversion:",
                     "",
                     "| Case | rho | Relative error vs 1.1 |",
                     "| --- | ---: | ---: |",
-                    f"| This run | {rho:.5f} | {metrics.get('rho_rel_error', 0.0) * 100:.3f}% |",
+                    f"| This run (rho_init={metrics.get('rho_init', 'n/a')}) | {rho:.5f} | {metrics.get('rho_rel_error', 0.0) * 100:.3f}% |",
                     "| Paper, initial rho=0.5 | 1.11737 | 1.579% |",
                     "| Paper, initial rho=1 | 1.11717 | 1.561% |",
+                    "",
+                    "Field errors are auxiliary diagnostics for this inverse run and are not used as the main Example 6 success criterion.",
                     "",
                 ]
                 lines += comparison_table(metrics, "example2")
             elif result["case"] == "example5":
                 lines += comparison_table(metrics, "example5")
+            else:
+                lines += [
+                    "No matching reference text files are available for this case yet, so this run records training/checkpoint status only.",
+                    "",
+                    f"- Metrics available: {metrics.get('metrics_available', False)}",
+                    f"- Final stage: {metrics.get('final_stage', 'n/a')}",
+                    f"- Kr mode: {metrics.get('kr_mode', 'n/a')}",
+                    f"- Fourier feature embedding: {metrics.get('use_ff', 'n/a')}",
+                    f"- Log initial/boundary loss: {metrics.get('use_log_loss', 'n/a')}",
+                ]
             lines += ["", ""]
     (reports / "reproduction_runner_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -433,10 +484,18 @@ def run_workflow(args: argparse.Namespace) -> Path:
     info = env_info()
     (run_dir / "reports" / "environment.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
 
-    cases = ["example2", "example5"] if args.case == "all" else [args.case]
+    cases = ["example6", "example5"] if args.case == "all" else [args.case]
     results = []
     for case in cases:
-        result = run_case(run_dir, workdir, case, args.max_walltime_seconds, args.max_iter_override)
+        result = run_case(
+            run_dir,
+            workdir,
+            case,
+            args.max_walltime_seconds,
+            args.max_iter_override,
+            args.rho_init,
+            args.seed,
+        )
         results.append(result)
         write_report(run_dir, inputs, results, info)
         if result["returncode"] != 0:
@@ -448,12 +507,14 @@ def run_workflow(args: argparse.Namespace) -> Path:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case", choices=["example2", "example5", "all"], default="all")
+    parser.add_argument("--case", choices=["example2", "example3", "example4", "example6", "example5", "all"], default="all")
     parser.add_argument("--data-source", type=Path, default=Path(r"C:\Users\12412\Documents\Lei_code"))
     parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT)
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--max-walltime-seconds", type=float, default=0.0)
     parser.add_argument("--max-iter-override", type=int, default=None)
+    parser.add_argument("--rho-init", type=float, default=1.0)
+    parser.add_argument("--seed", type=int, default=12)
     parser.add_argument("--allow-existing-run", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--status", action="store_true", help="read-only run status query")

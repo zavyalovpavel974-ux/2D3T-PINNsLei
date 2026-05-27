@@ -33,6 +33,8 @@ parser.add_argument('--resume-checkpoint', default=None)
 parser.add_argument('--max-walltime-seconds', type=float, default=0.0)
 parser.add_argument('--max-iter-override', type=int, default=None)
 parser.add_argument('--metrics-json', default=None)
+parser.add_argument('--rho-init', type=float, default=1.0)
+parser.add_argument('--seed', type=int, default=12)
 # parser.add_argument('--adjoint', action='store_true')
 args = parser.parse_args()      # parsing the parameters
 argsDict = args.__dict__
@@ -144,6 +146,7 @@ class PhysicsInformedNN:
         self.x_f = torch.from_numpy(X_f_train_total[:, 0:1]).to(**DeviceDtype)
         self.y_f = torch.from_numpy(X_f_train_total[:, 1:2]).to(**DeviceDtype)
         self.t_f = torch.from_numpy(X_f_train_total[:, 2:3]).to(**DeviceDtype)
+        self.supervision_indices = {}
 
         with open('./sol1_wei_aei70_wer_krar_1e-5.txt','r') as fp:
         # with open('./sol1e-8.txt','r') as fp:
@@ -170,7 +173,9 @@ class PhysicsInformedNN:
             Data = Data[:,:,(1,2,0)]
         
         
-        idx = np.random.permutation(80*80)[:100]
+        n_points = Data.shape[0] * Data.shape[1]
+        idx = np.random.permutation(n_points)[:100]
+        self.supervision_indices["1e-5"] = idx.tolist()
         self.x_sup_1efu5 = torch.from_numpy(X_mesh.reshape(-1,1)[idx]).to(**DeviceDtype)
         self.y_sup_1efu5 = torch.from_numpy(Y_mesh.reshape(-1,1)[idx]).to(**DeviceDtype)
         self.t_sup_1efu5 = 1e-5*torch.ones_like(self.x_sup_1efu5)
@@ -203,7 +208,9 @@ class PhysicsInformedNN:
             Data = Data[:,:,(1,2,0)]
         
         
-        idx = np.random.permutation(80*80)[:100]
+        n_points = Data.shape[0] * Data.shape[1]
+        idx = np.random.permutation(n_points)[:100]
+        self.supervision_indices["0.3"] = idx.tolist()
         self.x_sup_0p3 = torch.from_numpy(X_mesh.reshape(-1,1)[idx]).to(**DeviceDtype)
         self.y_sup_0p3 = torch.from_numpy(Y_mesh.reshape(-1,1)[idx]).to(**DeviceDtype)
         self.t_sup_0p3 = 0.3*torch.ones_like(self.x_sup_0p3)
@@ -236,7 +243,9 @@ class PhysicsInformedNN:
             Data = Data[:,:,(1,2,0)]
         
         
-        idx = np.random.permutation(80*80)[:100]
+        n_points = Data.shape[0] * Data.shape[1]
+        idx = np.random.permutation(n_points)[:100]
+        self.supervision_indices["0.5"] = idx.tolist()
         self.x_sup_0p5 = torch.from_numpy(X_mesh.reshape(-1,1)[idx]).to(**DeviceDtype)
         self.y_sup_0p5 = torch.from_numpy(Y_mesh.reshape(-1,1)[idx]).to(**DeviceDtype)
         self.t_sup_0p5 = 0.5*torch.ones_like(self.x_sup_0p5)
@@ -269,7 +278,9 @@ class PhysicsInformedNN:
             Data = Data[:,:,(1,2,0)]
         
         
-        idx = np.random.permutation(80*80)[:100]
+        n_points = Data.shape[0] * Data.shape[1]
+        idx = np.random.permutation(n_points)[:100]
+        self.supervision_indices["0.7"] = idx.tolist()
         self.x_sup_0p7 = torch.from_numpy(X_mesh.reshape(-1,1)[idx]).to(**DeviceDtype)
         self.y_sup_0p7 = torch.from_numpy(Y_mesh.reshape(-1,1)[idx]).to(**DeviceDtype)
         self.t_sup_0p7 = 0.7*torch.ones_like(self.x_sup_0p7)
@@ -302,7 +313,9 @@ class PhysicsInformedNN:
             Data = Data[:,:,(1,2,0)]
         
         
-        idx = np.random.permutation(80*80)[:100]
+        n_points = Data.shape[0] * Data.shape[1]
+        idx = np.random.permutation(n_points)[:100]
+        self.supervision_indices["1.0"] = idx.tolist()
         self.x_sup_1 = torch.from_numpy(X_mesh.reshape(-1,1)[idx]).to(**DeviceDtype)
         self.y_sup_1 = torch.from_numpy(Y_mesh.reshape(-1,1)[idx]).to(**DeviceDtype)
         self.t_sup_1 = 1.0*torch.ones_like(self.x_sup_1)
@@ -325,7 +338,8 @@ class PhysicsInformedNN:
 
         self.net_u = nn.Sequential(*layers).to(**DeviceDtype)
         
-        self.rou = torch.nn.Parameter( torch.tensor([1.0], requires_grad=True).to(**DeviceDtype))
+        self.rho_init = float(args.rho_init)
+        self.rou = torch.nn.Parameter( torch.tensor([self.rho_init], requires_grad=True).to(**DeviceDtype))
         #self.rou = torch.nn.Parameter( torch.tensor([0.5], requires_grad=True).to(**DeviceDtype))
         self.net_u.register_parameter('rou', self.rou)
 
@@ -521,7 +535,7 @@ class PhysicsInformedNN:
                 opt.load_state_dict(checkpoint["optimizer"])
             if "scheduler" in checkpoint:
                 scheduler.load_state_dict(checkpoint["scheduler"])
-            if "lbfgs" in checkpoint:
+            if "lbfgs" in checkpoint and checkpoint.get("phase") not in {"lbfgs", "lbfgs_start"}:
                 opt_lbfgs.load_state_dict(checkpoint["lbfgs"])
             start_iter = int(checkpoint.get("adam_iter", 0))
             resume_phase = checkpoint.get("phase")
@@ -550,6 +564,8 @@ class PhysicsInformedNN:
         # ============================================================
         # ****  Define Loss and Logging Information  
         # ============================================================ 
+
+        current_phase = "adam"
 
         def complus_loss(it = None):
             
@@ -961,9 +977,9 @@ class PhysicsInformedNN:
             nonlocal last_checkpoint_it
             if checkpoint_dir and args.checkpoint_interval > 0 and it % args.checkpoint_interval == 0 and it != last_checkpoint_it:
                 last_checkpoint_it = it
-                path = save_checkpoint(it, "adam" if it < nIter else "lbfgs", loss)
+                path = save_checkpoint(it, current_phase, loss)
                 print("[repro] checkpoint saved: %s" % path, flush=True)
-            maybe_stop_for_walltime(it, "adam" if it < nIter else "lbfgs", loss)
+            maybe_stop_for_walltime(it, current_phase, loss)
             self.net_u.zero_grad() # model.zero_grad 与 opt.zero_grad 完全等价，opt甚至是调用了model.
             loss.backward()
             return loss
@@ -973,7 +989,8 @@ class PhysicsInformedNN:
         # ****  Adam  
         # ============================================================ 
 
-        if resume_phase != "lbfgs":
+        if resume_phase not in {"lbfgs", "lbfgs_start"}:
+            current_phase = "adam"
             for it in range(start_iter, nIter):
                 
                 #opt.zero_grad()
@@ -984,6 +1001,7 @@ class PhysicsInformedNN:
         # ============================================================
         # ****  LBFGS , LBFGS 可以自行获取迭代次数 用以判断输出，无需传入
         # ============================================================ 
+        current_phase = "lbfgs"
         save_checkpoint(nIter, "lbfgs_start")
         opt_lbfgs.step(complus_loss)
         save_checkpoint(nIter, "completed")

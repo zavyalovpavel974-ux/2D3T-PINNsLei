@@ -67,6 +67,9 @@ class ReferenceConfig:
     gmres_maxiter: int = 120
     line_search_max: int = 8
     temp_floor: float = 1e-10
+    log_every_step: bool = False
+    log_rejected_steps: bool = False
+    debug_on_failure: bool = False
 
 
 def tr_surface(t: float, nx: int, t0: float) -> np.ndarray:
@@ -162,23 +165,83 @@ def build_preconditioner(U: np.ndarray, nx: int, ny: int, dt: float, dx: float, 
     return LinearOperator((n, n), matvec=lambda v: v / diag, dtype=np.float64)
 
 
+def gmres_callback_summary(values: list[float], callback_type: str) -> dict:
+    finite = [float(v) for v in values if np.isfinite(v)]
+    summary = {
+        "callback_type": callback_type,
+        "iterations": len(values),
+        "finite_iterations": len(finite),
+        "tail": [float(v) for v in values[-10:]],
+    }
+    if finite:
+        summary.update({
+            "first": finite[0],
+            "last": finite[-1],
+            "min": min(finite),
+            "max": max(finite),
+        })
+    return summary
+
+
 def solve_gmres(A: LinearOperator, b: np.ndarray, M: LinearOperator, cfg: ReferenceConfig):
+    residuals: list[float] = []
+
+    def record_callback(value) -> None:
+        try:
+            residuals.append(float(value) if np.isscalar(value) else float(np.linalg.norm(value)))
+        except (TypeError, ValueError, FloatingPointError):
+            residuals.append(float("nan"))
+
     try:
-        return gmres(A, b, M=M, restart=cfg.gmres_restart, maxiter=cfg.gmres_maxiter, atol=0.0, rtol=cfg.gmres_tol)
+        x, info = gmres(
+            A,
+            b,
+            M=M,
+            restart=cfg.gmres_restart,
+            maxiter=cfg.gmres_maxiter,
+            atol=0.0,
+            rtol=cfg.gmres_tol,
+            callback=record_callback,
+            callback_type="pr_norm",
+        )
+        return x, info, gmres_callback_summary(residuals, "pr_norm")
     except TypeError:
-        return gmres(A, b, M=M, restart=cfg.gmres_restart, maxiter=cfg.gmres_maxiter, atol=0.0, tol=cfg.gmres_tol)
+        residuals.clear()
+        x, info = gmres(
+            A,
+            b,
+            M=M,
+            restart=cfg.gmres_restart,
+            maxiter=cfg.gmres_maxiter,
+            atol=0.0,
+            tol=cfg.gmres_tol,
+            callback=record_callback,
+        )
+        return x, info, gmres_callback_summary(residuals, "legacy")
+
+
+def gmres_log_text(summary) -> str:
+    if not summary:
+        return "gmres_iterations=None gmres_last=None"
+    return f"gmres_iterations={summary.get('iterations')} gmres_last={summary.get('last')}"
 
 
 def jfnk_step(U: np.ndarray, F, nx: int, ny: int, dt: float, dx: float, dy: float, p: PhysicalParams, cfg: ReferenceConfig):
     n = U.size
     u = U.copy()
     last_norm = np.inf
+    last_gmres_info = None
+    last_gmres_summary = None
     for k in range(cfg.newton_max):
         R = F(u)
         norm_R = float(np.linalg.norm(R) / np.sqrt(R.size))
         last_norm = norm_R
         if norm_R < cfg.newton_tol:
-            return u, True, last_norm, k + 1
+            return u, True, last_norm, k + 1, {
+                "reason": "converged",
+                "gmres_info": last_gmres_info,
+                "gmres_summary": last_gmres_summary,
+            }
 
         def Jv(v: np.ndarray) -> np.ndarray:
             norm_v = np.linalg.norm(v)
@@ -189,9 +252,12 @@ def jfnk_step(U: np.ndarray, F, nx: int, ny: int, dt: float, dx: float, dy: floa
 
         A = LinearOperator((n, n), matvec=Jv, dtype=np.float64)
         M = build_preconditioner(u, nx, ny, dt, dx, dy, p, cfg)
-        dU, _info = solve_gmres(A, -R, M, cfg)
+        dU, info, gmres_summary = solve_gmres(A, -R, M, cfg)
+        last_gmres_info = int(info) if np.isscalar(info) else info
+        last_gmres_summary = gmres_summary
 
         alpha, ok = 1.0, False
+        trial_norm = np.inf
         for _ in range(cfg.line_search_max):
             u_try = u + alpha * dU
             trial_norm = float(np.linalg.norm(F(u_try)) / np.sqrt(R.size))
@@ -201,8 +267,18 @@ def jfnk_step(U: np.ndarray, F, nx: int, ny: int, dt: float, dx: float, dy: floa
                 break
             alpha *= 0.5
         if not ok:
-            return u, False, last_norm, k + 1
-    return u, False, last_norm, cfg.newton_max
+            return u, False, last_norm, k + 1, {
+                "reason": "line_search_failed",
+                "gmres_info": last_gmres_info,
+                "gmres_summary": last_gmres_summary,
+                "alpha": alpha,
+                "trial_norm": trial_norm,
+            }
+    return u, False, last_norm, cfg.newton_max, {
+        "reason": "newton_max",
+        "gmres_info": last_gmres_info,
+        "gmres_summary": last_gmres_summary,
+    }
 
 
 def snapshot_from_state(U: np.ndarray, ny: int, nx: int, t: float, p: PhysicalParams) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -211,7 +287,7 @@ def snapshot_from_state(U: np.ndarray, ny: int, nx: int, t: float, p: PhysicalPa
     return Te, Ti, Tr
 
 
-def _save_reference_checkpoint(path: Path, x: np.ndarray, y: np.ndarray, U: np.ndarray, t: float, dt: float, step: int, snapshots, history) -> None:
+def _save_reference_checkpoint(path: Path, x: np.ndarray, y: np.ndarray, U: np.ndarray, t: float, dt: float, step: int, snapshots, history, diagnostics=None) -> None:
     data = {
         "x": x,
         "y": y,
@@ -221,6 +297,8 @@ def _save_reference_checkpoint(path: Path, x: np.ndarray, y: np.ndarray, U: np.n
         "step": np.array([step], dtype=np.int64),
         "history_json": np.array([json.dumps(history)], dtype=object),
     }
+    if diagnostics is not None:
+        data["diagnostics_json"] = np.array([json.dumps(diagnostics)], dtype=object)
     for ts, (Te, Ti, Tr) in sorted(snapshots.items()):
         tag = f"{ts:.10f}"
         data[f"Te_{tag}"] = Te
@@ -260,6 +338,7 @@ def solve_reference(
     targets = sorted(set(float(t) for t in snapshot_times if 0.0 <= t <= 1.0))
     snapshots: Dict[float, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     history = []
+    diagnostics = []
     t, dt, step = 0.0, cfg.dt_init, 0
     if resume_checkpoint:
         x, y, U, t, dt, step, snapshots, history = _load_reference_checkpoint(resume_checkpoint)
@@ -270,19 +349,59 @@ def solve_reference(
         dt = min(dt, 1.0 - t)
         U_old = U.copy()
         F = lambda U_new: residual(U_new, U_old, dt, x, y, t + dt, p, cfg)
-        U_new, ok, res, nit = jfnk_step(U_old, F, cfg.nx, cfg.ny, dt, dx, dy, p, cfg)
+        U_new, ok, res, nit, details = jfnk_step(U_old, F, cfg.nx, cfg.ny, dt, dx, dy, p, cfg)
         if not ok:
+            attempted_dt = dt
             dt *= 0.5
+            event = {
+                "type": "rejected_step",
+                "step": step + 1,
+                "time": t,
+                "attempted_dt": attempted_dt,
+                "next_dt": dt,
+                "newton_iters": nit,
+                "residual_norm": res,
+                **details,
+            }
+            diagnostics.append(event)
+            if cfg.log_rejected_steps:
+                print(
+                    "[reference] reject "
+                    f"step={step + 1} t={t:.6f} attempted_dt={attempted_dt:.3e} "
+                    f"next_dt={dt:.3e} newton={nit} residual={res:.3e} "
+                    f"reason={details.get('reason')} gmres_info={details.get('gmres_info')} "
+                    f"{gmres_log_text(details.get('gmres_summary'))}",
+                    flush=True,
+                )
             if dt < cfg.dt_min:
-                raise RuntimeError(f"Reference solve failed: dt<{cfg.dt_min} at t={t:.6f}; last residual={res:.3e}")
+                debug_path = None
+                if checkpoint_path and cfg.debug_on_failure:
+                    debug_path = checkpoint_path.with_suffix(".failed.npz")
+                    _save_reference_checkpoint(debug_path, x, y, U, t, dt, step, snapshots, history, diagnostics)
+                    print(f"[reference] wrote failure debug checkpoint {debug_path}", flush=True)
+                suffix = f"; debug_checkpoint={debug_path}" if debug_path else ""
+                raise RuntimeError(f"Reference solve failed: dt<{cfg.dt_min} at t={t:.6f}; last residual={res:.3e}{suffix}")
             continue
 
         t_prev, t = t, t + dt
         U = U_new
         step += 1
-        history.append({"step": step, "time": t, "dt": dt, "newton_iters": nit, "residual_norm": res})
-        if step % 25 == 0 or t >= 1.0 - 1e-14:
-            print(f"[reference] step={step} t={t:.6f} dt={dt:.2e} newton={nit} residual={res:.3e}", flush=True)
+        history.append({
+            "step": step,
+            "time": t,
+            "dt": dt,
+            "newton_iters": nit,
+            "residual_norm": res,
+            "gmres_info": details.get("gmres_info"),
+            "gmres_summary": details.get("gmres_summary"),
+        })
+        if cfg.log_every_step or step % 25 == 0 or t >= 1.0 - 1e-14:
+            print(
+                f"[reference] step={step} t={t:.6f} dt={dt:.2e} "
+                f"newton={nit} residual={res:.3e} gmres_info={details.get('gmres_info')} "
+                f"{gmres_log_text(details.get('gmres_summary'))}",
+                flush=True,
+            )
 
         for ts in targets:
             if ts in snapshots:
@@ -293,14 +412,14 @@ def solve_reference(
         if nit <= 3 and dt < cfg.dt_max:
             dt = min(cfg.dt_max, dt * 1.2)
         if checkpoint_path and checkpoint_interval_steps > 0 and step % checkpoint_interval_steps == 0:
-            _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history)
+            _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history, diagnostics)
         if checkpoint_path and max_walltime_seconds > 0.0 and time.time() - start >= max_walltime_seconds:
-            _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history)
+            _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history, diagnostics)
             raise TimeoutError(f"reference solve reached walltime at step={step} t={t:.6f}; checkpoint={checkpoint_path}")
 
     print(f"[reference] done in {time.time()-start:.1f}s, steps={step}", flush=True)
     if checkpoint_path:
-        _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history)
+        _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history, diagnostics)
     return x, y, snapshots, history
 
 
@@ -446,6 +565,9 @@ def main() -> None:
     solve_p.add_argument("--resume-checkpoint", type=Path)
     solve_p.add_argument("--checkpoint-interval-steps", type=int, default=25)
     solve_p.add_argument("--max-walltime-seconds", type=float, default=0.0)
+    solve_p.add_argument("--log-every-step", action="store_true")
+    solve_p.add_argument("--log-rejected-steps", action="store_true")
+    solve_p.add_argument("--debug-on-failure", action="store_true")
 
     export_p = sub.add_parser("export", help="export author txt files from an npz")
     export_p.add_argument("--case", choices=["aei70_krar", "aei700_krartr"], required=True)
@@ -476,6 +598,9 @@ def main() -> None:
             dt_max=args.dt_max,
             newton_max=args.newton_max,
             gmres_maxiter=args.gmres_maxiter,
+            log_every_step=args.log_every_step,
+            log_rejected_steps=args.log_rejected_steps,
+            debug_on_failure=args.debug_on_failure,
         )
         x, y, snapshots, history = solve_reference(
             params,

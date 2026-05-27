@@ -8,6 +8,7 @@ author : lei xiaojun
 
 import sys,os
 import json
+import hashlib
 sys.path.insert(0, '../Utilities/')
 
 import torch
@@ -25,13 +26,65 @@ import matplotlib.gridspec as gridspec
 
 
 
-np.random.seed(12)
-torch.manual_seed(12)
-torch.cuda.manual_seed_all(12)
+np.random.seed(repro_args.seed)
+torch.manual_seed(repro_args.seed)
+torch.cuda.manual_seed_all(repro_args.seed)
 torch.backends.cudnn.deterministic = True
 
 # 保存文件的子文件夹，用于多次运行不覆盖
 FolderName = 'Train_6000_30000_2406121540/'
+
+EX6_REFERENCE_FILES = {
+    "1e-5": "sol1_wei_aei70_wer_krar_1e-5.txt",
+    "0.3": "sol1_wei_aei70_wer_krar_0p3.txt",
+    "0.5": "sol1_wei_aei70_wer_krar_0p5.txt",
+    "0.7": "sol1_wei_aei70_wer_krar_0p7.txt",
+    "1.0": "sol1_wei_aei70_wer_krar_1.txt",
+}
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def subset_metrics(references, predictions, supervision_indices, mode):
+    ref_parts = []
+    pred_parts = []
+    for label, reference in references.items():
+        prediction = predictions[label]
+        supervised = np.asarray(supervision_indices[label], dtype=int)
+        if mode == "supervised":
+            idx = supervised
+        elif mode == "held_out":
+            idx = np.setdiff1d(np.arange(reference.shape[0]), supervised, assume_unique=False)
+        else:
+            raise ValueError(mode)
+        ref_parts.append(reference[idx])
+        pred_parts.append(prediction[idx])
+    reference_all = np.concatenate(ref_parts, axis=0)
+    prediction_all = np.concatenate(pred_parts, axis=0)
+    error = np.abs(reference_all - prediction_all)
+    return {
+        "Te": {
+            "L2": float(np.sqrt(np.mean(np.square(error[:,0]))) / np.sqrt(np.mean(np.square(reference_all[:,0])))),
+            "L1": float(np.mean(error[:,0])),
+            "Linf": float(np.max(error[:,0])),
+        },
+        "Ti": {
+            "L2": float(np.sqrt(np.mean(np.square(error[:,1]))) / np.sqrt(np.mean(np.square(reference_all[:,1])))),
+            "L1": float(np.mean(error[:,1])),
+            "Linf": float(np.max(error[:,1])),
+        },
+        "Tr": {
+            "L2": float(np.sqrt(np.mean(np.square(error[:,2]))) / np.sqrt(np.mean(np.square(reference_all[:,2])))),
+            "L1": float(np.mean(error[:,2])),
+            "Linf": float(np.max(error[:,2])),
+        },
+    }
 
 
 
@@ -627,18 +680,62 @@ if __name__ == "__main__":
     print('Tel1: %.3e, Til1: %.3e, Trl1: %.3e' % (Tel1_err,Til1_err,Trl1_err))
     print('Teli: %.3e, Tili: %.3e, Trli: %.3e' % (Teli_err,Tili_err,Trli_err))
     if repro_args.metrics_json:
+        current_rho = float(model.rou.detach().cpu().reshape(-1)[0])
+        references_by_time = {
+            "1e-5": Data1efu5,
+            "0.3": Data0p3,
+            "0.5": Data0p5,
+            "0.7": Data0p7,
+            "1.0": Data1,
+        }
+        predictions_by_time = {
+            "1e-5": upred_1efu5,
+            "0.3": upred_0p3,
+            "0.5": upred_0p5,
+            "0.7": upred_0p7,
+            "1.0": upred_1,
+        }
+        full_grid_metrics = {
+            "Te": {"L2": float(Tel2_err), "L1": float(Tel1_err), "Linf": float(Teli_err)},
+            "Ti": {"L2": float(Til2_err), "L1": float(Til1_err), "Linf": float(Tili_err)},
+            "Tr": {"L2": float(Trl2_err), "L1": float(Trl1_err), "Linf": float(Trli_err)},
+        }
         metrics = {
-            "case": "example2_inverse",
+            "case": "example6_inverse_on_example2_params",
+            "legacy_case": "example2_inverse",
             "reference": "interpolated_80x80_from20",
+            "reference_role": "supervision_observations_and_auxiliary_field_diagnostics",
             "training_time_seconds": float(elapsed),
-            "rho": float(model.rou.detach().cpu().reshape(-1)[0]),
+            "rho_init": float(repro_args.rho_init),
+            "rho": current_rho,
             "rho_true": 1.1,
-            "rho_abs_error": float(abs(float(model.rou.detach().cpu().reshape(-1)[0]) - 1.1)),
-            "rho_rel_error": float(abs(float(model.rou.detach().cpu().reshape(-1)[0]) - 1.1) / 1.1),
-            "aggregate": {
-                "Te": {"L2": float(Tel2_err), "L1": float(Tel1_err), "Linf": float(Teli_err)},
-                "Ti": {"L2": float(Til2_err), "L1": float(Til1_err), "Linf": float(Tili_err)},
-                "Tr": {"L2": float(Trl2_err), "L1": float(Trl1_err), "Linf": float(Trli_err)},
+            "rho_abs_error": float(abs(current_rho - 1.1)),
+            "rho_rel_error": float(abs(current_rho - 1.1) / 1.1),
+            "seed": int(repro_args.seed),
+            "supervision": {
+                "points_per_time": 100,
+                "indices": model.supervision_indices,
+            },
+            "input_reference_files": {
+                label: {
+                    "path": name,
+                    "sha256": sha256_file(name),
+                }
+                for label, name in EX6_REFERENCE_FILES.items()
+            },
+            "field_error_note": (
+                "Field errors are auxiliary diagnostics for Example 6. "
+                "The primary reproduction target is rho inversion, not Example 2 Table 4 field-error matching."
+            ),
+            "aggregate": full_grid_metrics,
+            "field_errors": {
+                "full_grid": full_grid_metrics,
+                "supervised_points": subset_metrics(
+                    references_by_time, predictions_by_time, model.supervision_indices, "supervised"
+                ),
+                "held_out_grid": subset_metrics(
+                    references_by_time, predictions_by_time, model.supervision_indices, "held_out"
+                ),
             },
             "times": {
                 "1e-5": {

@@ -34,6 +34,13 @@ parser.add_argument('--max-walltime-seconds', type=float, default=0.0)
 parser.add_argument('--max-iter-override', type=int, default=None)
 parser.add_argument('--metrics-json', default=None)
 parser.add_argument('--resume-stage', type=float, default=None)
+parser.add_argument('--transfer-stages', default='70,400,700')
+parser.add_argument('--kr-mode', choices=['constant', 'linear_tr', 'power'], default='linear_tr')
+parser.add_argument('--skip-metrics', action='store_true')
+parser.add_argument('--use-ff', action=argparse.BooleanOptionalAction, default=True)
+parser.add_argument('--use-log-loss', action=argparse.BooleanOptionalAction, default=True)
+parser.add_argument('--lambda-brd', type=float, default=20.0)
+parser.add_argument('--lambda-init', type=float, default=10.0)
 # parser.add_argument('--adjoint', action='store_true')
 args = parser.parse_args()      # parsing the parameters
 argsDict = args.__dict__
@@ -156,7 +163,8 @@ class PhysicsInformedNN:
 
         size = 1000
         #net_u是网络，每个进程网络结构不同
-        layers = [nn.Linear(in_features=self.layers[0][0]+2*size, out_features=self.layers[0][1]), nn.Tanh()]
+        input_features = self.layers[0][0] + (2 * size if args.use_ff else 0)
+        layers = [nn.Linear(in_features=input_features, out_features=self.layers[0][1]), nn.Tanh()]
         #layers = [nn.Linear(in_features=self.layers[0][0], out_features=self.layers[0][1]), nn.Tanh()]
         self.slope = torch.nn.Parameter(torch.ones(len(self.layers[0])-2)*1/args.n_hyper)
         for i in range(len(self.layers[0])-2):
@@ -165,15 +173,16 @@ class PhysicsInformedNN:
 
         self.net_u = nn.Sequential(*layers).to(**DeviceDtype)
         #self.net_u.register_parameter('mu_', self.mu_)
-        self.FF_weight = torch.randn((self.layers[0][0],size)).to(**DeviceDtype)
+        self.FF_weight = torch.randn((self.layers[0][0],size)).to(**DeviceDtype) if args.use_ff else None
 
 
     #改一下非负激活函数
     #net只是对输入数据先映射到[-1,1]，再进入net_u
     def net(self, x):
         x = 2.0*(x - self.lb)/(self.ub - self.lb)-1.0
-        y = x@self.FF_weight  # N x size
-        x = torch.cat((x,torch.cos(y),torch.sin(y)),1)
+        if args.use_ff:
+            y = x@self.FF_weight  # N x size
+            x = torch.cat((x,torch.cos(y),torch.sin(y)),1)
         # return self.net_u(x)
         return torch.log(1+torch.exp(self.net_u(x)))
         # return 1/2*torch.log(1+torch.exp(1/2*self.net_u(x)))+3e-4
@@ -258,10 +267,12 @@ class PhysicsInformedNN:
         Ti_x, Ti_y, Ti_t = self._grad_(Ti, [x,y,t])
         Tr_x, Tr_y, Tr_t = self._grad_(Tr, [x,y,t])
         
-        # Ke, Ki, Kr = Ae*Te.pow(5/2),Ai*Ti.pow(5/2),Ar*Tr.pow(3+beta)
-        # Ke, Ki, Kr = Ae*Te.pow(5/2),Ai*Ti.pow(5/2),10
-        #Ke, Ki, Kr = Ae*Te.pow(5/2),Ai*Ti.pow(5/2),Ar
-        Ke, Ki, Kr = Ae*Te.pow(5/2),Ai*Ti.pow(5/2),Ar*Tr
+        if args.kr_mode == 'constant':
+            Ke, Ki, Kr = Ae*Te.pow(5/2), Ai*Ti.pow(5/2), Ar
+        elif args.kr_mode == 'power':
+            Ke, Ki, Kr = Ae*Te.pow(5/2), Ai*Ti.pow(5/2), Ar*Tr.pow(3+beta)
+        else:
+            Ke, Ki, Kr = Ae*Te.pow(5/2), Ai*Ti.pow(5/2), Ar*Tr
         # Ke, Ki, Kr = 10, 10, 10
         # Ke, Ki, Kr = 1, 1, 1
         wei, wer = rou*Aei*Te.pow(-2/3), rou*Aer*Te.pow(-1/2)
@@ -475,13 +486,23 @@ class PhysicsInformedNN:
             lossfe = loss_func(fe,torch.zeros_like(fe))
             lossfi = loss_func(fi,torch.zeros_like(fi))
             lossfr = loss_func(fr,torch.zeros_like(fr))
-            loss = 10*loss_func(torch.log(u0_pred[:,0:1]),torch.log(t0*torch.ones_like(u0_pred[:,0:1]))) +\
-                10*loss_func(torch.log(u0_pred[:,1:2]),torch.log(t0*torch.ones_like(u0_pred[:,1:2]))) +\
-                    10*loss_func(torch.log(u0_pred[:,2:3]),torch.log(t0*torch.ones_like(u0_pred[:,2:3]))) +\
-                        20*loss_func(torch.log(urg3_pred[:,2:3]),torch.log(Trfree_boundary(self.x_yub, self.t_yub)))+\
-                            1*sum([loss_func(TT,torch.zeros_like(TT)) for TT in ret_Tr3]) +\
-                                1*sum([loss_func(TT,torch.zeros_like(TT)) for TT in ret_TeTi8]) +\
-                                    lossfe + lossfi + lossfr
+            target0 = t0*torch.ones_like(u0_pred[:,0:1])
+            target_brd = Trfree_boundary(self.x_yub, self.t_yub)
+            if args.use_log_loss:
+                init_e = loss_func(torch.log(u0_pred[:,0:1]), torch.log(target0))
+                init_i = loss_func(torch.log(u0_pred[:,1:2]), torch.log(t0*torch.ones_like(u0_pred[:,1:2])))
+                init_r = loss_func(torch.log(u0_pred[:,2:3]), torch.log(t0*torch.ones_like(u0_pred[:,2:3])))
+                brd = loss_func(torch.log(urg3_pred[:,2:3]), torch.log(target_brd))
+            else:
+                init_e = loss_func(u0_pred[:,0:1], target0)
+                init_i = loss_func(u0_pred[:,1:2], t0*torch.ones_like(u0_pred[:,1:2]))
+                init_r = loss_func(u0_pred[:,2:3], t0*torch.ones_like(u0_pred[:,2:3]))
+                brd = loss_func(urg3_pred[:,2:3], target_brd)
+            loss = args.lambda_init*(init_e + init_i + init_r) +\
+                args.lambda_brd*brd +\
+                    1*sum([loss_func(TT,torch.zeros_like(TT)) for TT in ret_Tr3]) +\
+                        1*sum([loss_func(TT,torch.zeros_like(TT)) for TT in ret_TeTi8]) +\
+                            lossfe + lossfi + lossfr
             #aei=400 kr=ar用的就是这个
             # loss = 10*loss_func(torch.log(u0_pred[:,0:1]),torch.log(t0*torch.ones_like(u0_pred[:,0:1]))) +\
             #     10*loss_func(torch.log(u0_pred[:,1:2]),torch.log(t0*torch.ones_like(u0_pred[:,1:2]))) +\
@@ -834,7 +855,7 @@ class PhysicsInformedNN:
         # ****  Adam  
         # ============================================================ 
 
-        if resume_phase != "lbfgs":
+        if resume_phase not in {"lbfgs", "lbfgs_start"}:
             for it in range(start_iter, nIter):
                 
                 #opt.zero_grad()

@@ -8,6 +8,7 @@ This helper only creates files inside the target run directory when using the
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import subprocess
@@ -27,6 +28,19 @@ from repro_runner import (
 
 
 def process_exists(pid: int) -> bool:
+    if os.name == "nt":
+        process_query_limited_information = 0x1000
+        still_active = 259
+        handle = ctypes.windll.kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == still_active
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except OSError:
@@ -71,6 +85,8 @@ def start(args: argparse.Namespace) -> None:
         cmd += ["--max-walltime-seconds", str(args.max_walltime_seconds)]
     if args.max_iter_override is not None:
         cmd += ["--max-iter-override", str(args.max_iter_override)]
+    if args.case in ("example2", "example6", "all"):
+        cmd += ["--rho-init", str(args.rho_init), "--seed", str(args.seed)]
 
     env = os.environ.copy()
     env["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -123,12 +139,14 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     start_parser = sub.add_parser("start")
-    start_parser.add_argument("--case", choices=["example2", "example5", "all"], default="all")
+    start_parser.add_argument("--case", choices=["example2", "example3", "example4", "example6", "example5", "all"], default="all")
     start_parser.add_argument("--data-source", type=Path, default=Path(r"C:\Users\12412\Documents\Lei_code"))
     start_parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT)
     start_parser.add_argument("--run-name", required=True)
     start_parser.add_argument("--max-walltime-seconds", type=float, default=0.0)
     start_parser.add_argument("--max-iter-override", type=int, default=None)
+    start_parser.add_argument("--rho-init", type=float, default=1.0)
+    start_parser.add_argument("--seed", type=int, default=12)
     start_parser.add_argument("--allow-existing-run", action="store_true")
     start_parser.set_defaults(func=start)
 
