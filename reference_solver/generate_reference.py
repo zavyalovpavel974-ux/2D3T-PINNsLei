@@ -57,6 +57,7 @@ class PhysicalParams:
 class ReferenceConfig:
     nx: int = 80
     ny: int = 80
+    grid_convention: str = "cell_center"
     dt_init: float = 5e-3
     dt_min: float = 1e-6
     dt_max: float = 2e-2
@@ -70,10 +71,29 @@ class ReferenceConfig:
     log_every_step: bool = False
     log_rejected_steps: bool = False
     debug_on_failure: bool = False
+    detailed_diagnostics: bool = False
 
 
 def tr_surface(t: float, nx: int, t0: float) -> np.ndarray:
     return np.full((nx,), t0 + 2.0 * t, dtype=np.float64)
+
+
+def make_grid(n: int, convention: str) -> np.ndarray:
+    if convention == "endpoint":
+        return np.linspace(0.0, 1.0, n, dtype=np.float64)
+    if convention == "cell_center":
+        return (np.arange(n, dtype=np.float64) + 0.5) / n
+    raise ValueError(f"unknown grid convention: {convention}")
+
+
+def infer_grid_convention(values: np.ndarray) -> str:
+    if len(values) < 2:
+        return "unknown"
+    if np.allclose(values, make_grid(len(values), "cell_center"), rtol=0.0, atol=1e-12):
+        return "cell_center"
+    if np.allclose(values, make_grid(len(values), "endpoint"), rtol=0.0, atol=1e-12):
+        return "endpoint"
+    return "custom"
 
 
 def pack(Te: np.ndarray, Ti: np.ndarray, Tr: np.ndarray) -> np.ndarray:
@@ -226,28 +246,100 @@ def gmres_log_text(summary) -> str:
     return f"gmres_iterations={summary.get('iterations')} gmres_last={summary.get('last')}"
 
 
+def vector_summary(v: np.ndarray) -> dict:
+    finite = np.isfinite(v)
+    summary = {
+        "finite": bool(finite.all()),
+        "size": int(v.size),
+        "nonfinite_count": int(v.size - finite.sum()),
+    }
+    if finite.any():
+        vf = v[finite]
+        summary.update({
+            "norm": float(np.linalg.norm(vf)),
+            "max_abs": float(np.max(np.abs(vf))),
+            "min": float(np.min(vf)),
+            "max": float(np.max(vf)),
+        })
+    return summary
+
+
+def values_summary(values: list[float]) -> dict:
+    finite = [float(v) for v in values if np.isfinite(v)]
+    summary = {
+        "count": len(values),
+        "finite_count": len(finite),
+    }
+    if finite:
+        summary.update({
+            "first": finite[0],
+            "last": finite[-1],
+            "min": min(finite),
+            "max": max(finite),
+        })
+    return summary
+
+
+def state_summary(U: np.ndarray, ny: int, nx: int, cfg: ReferenceConfig) -> dict:
+    Te, Ti, Tr = unpack(U, ny, nx)
+    out = {}
+    for name, arr in (("Te", Te), ("Ti", Ti), ("Tr", Tr)):
+        finite = np.isfinite(arr)
+        item = {
+            "finite": bool(finite.all()),
+            "nonfinite_count": int(arr.size - finite.sum()),
+            "below_floor_count": int(np.sum(arr < cfg.temp_floor)),
+            "nonpositive_count": int(np.sum(arr <= 0.0)),
+        }
+        if finite.any():
+            af = arr[finite]
+            item.update({
+                "min": float(np.min(af)),
+                "max": float(np.max(af)),
+                "mean": float(np.mean(af)),
+            })
+        out[name] = item
+    return out
+
+
 def jfnk_step(U: np.ndarray, F, nx: int, ny: int, dt: float, dx: float, dy: float, p: PhysicalParams, cfg: ReferenceConfig):
     n = U.size
     u = U.copy()
     last_norm = np.inf
     last_gmres_info = None
     last_gmres_summary = None
+    collect_details = cfg.debug_on_failure or cfg.detailed_diagnostics
+    newton_diagnostics = []
     for k in range(cfg.newton_max):
         R = F(u)
         norm_R = float(np.linalg.norm(R) / np.sqrt(R.size))
         last_norm = norm_R
+        iteration_details = None
+        if collect_details:
+            iteration_details = {
+                "iteration": k + 1,
+                "norm_R": norm_R,
+                "state": state_summary(u, ny, nx, cfg),
+            }
         if norm_R < cfg.newton_tol:
+            if collect_details:
+                newton_diagnostics.append(iteration_details)
             return u, True, last_norm, k + 1, {
                 "reason": "converged",
                 "gmres_info": last_gmres_info,
                 "gmres_summary": last_gmres_summary,
+                "newton_diagnostics": newton_diagnostics if collect_details else None,
             }
+
+        jv_eps_values = []
 
         def Jv(v: np.ndarray) -> np.ndarray:
             norm_v = np.linalg.norm(v)
             if norm_v < 1e-14:
                 return np.zeros_like(v)
             eps = np.sqrt(np.finfo(u.dtype).eps) * (1.0 + np.linalg.norm(u)) / norm_v
+            if collect_details:
+                jv_eps_values.append(float(eps))
             return (F(u + eps * v) - R) / eps
 
         A = LinearOperator((n, n), matvec=Jv, dtype=np.float64)
@@ -258,14 +350,35 @@ def jfnk_step(U: np.ndarray, F, nx: int, ny: int, dt: float, dx: float, dy: floa
 
         alpha, ok = 1.0, False
         trial_norm = np.inf
+        accepted_alpha = None
+        line_search_trials = []
         for _ in range(cfg.line_search_max):
             u_try = u + alpha * dU
             trial_norm = float(np.linalg.norm(F(u_try)) / np.sqrt(R.size))
-            if trial_norm < norm_R:
+            accepted = trial_norm < norm_R
+            if collect_details:
+                line_search_trials.append({
+                    "alpha": alpha,
+                    "trial_norm": trial_norm,
+                    "accepted": bool(accepted),
+                    "state": state_summary(u_try, ny, nx, cfg),
+                })
+            if accepted:
                 u = u_try
                 ok = True
+                accepted_alpha = alpha
                 break
             alpha *= 0.5
+        if collect_details:
+            iteration_details.update({
+                "gmres_info": last_gmres_info,
+                "gmres_summary": gmres_summary,
+                "jv_eps_summary": values_summary(jv_eps_values),
+                "dU_summary": vector_summary(dU),
+                "line_search_trials": line_search_trials,
+                "accepted_alpha": accepted_alpha,
+            })
+            newton_diagnostics.append(iteration_details)
         if not ok:
             return u, False, last_norm, k + 1, {
                 "reason": "line_search_failed",
@@ -273,11 +386,13 @@ def jfnk_step(U: np.ndarray, F, nx: int, ny: int, dt: float, dx: float, dy: floa
                 "gmres_summary": last_gmres_summary,
                 "alpha": alpha,
                 "trial_norm": trial_norm,
+                "newton_diagnostics": newton_diagnostics if collect_details else None,
             }
     return u, False, last_norm, cfg.newton_max, {
         "reason": "newton_max",
         "gmres_info": last_gmres_info,
         "gmres_summary": last_gmres_summary,
+        "newton_diagnostics": newton_diagnostics if collect_details else None,
     }
 
 
@@ -287,10 +402,11 @@ def snapshot_from_state(U: np.ndarray, ny: int, nx: int, t: float, p: PhysicalPa
     return Te, Ti, Tr
 
 
-def _save_reference_checkpoint(path: Path, x: np.ndarray, y: np.ndarray, U: np.ndarray, t: float, dt: float, step: int, snapshots, history, diagnostics=None) -> None:
+def _save_reference_checkpoint(path: Path, x: np.ndarray, y: np.ndarray, U: np.ndarray, t: float, dt: float, step: int, snapshots, history, diagnostics=None, grid_convention: str = "unknown") -> None:
     data = {
         "x": x,
         "y": y,
+        "grid_convention": np.array([grid_convention], dtype=object),
         "U": U,
         "t": np.array([t], dtype=np.float64),
         "dt": np.array([dt], dtype=np.float64),
@@ -310,6 +426,8 @@ def _save_reference_checkpoint(path: Path, x: np.ndarray, y: np.ndarray, U: np.n
 
 def _load_reference_checkpoint(path: Path):
     d = np.load(path, allow_pickle=True)
+    x = np.asarray(d["x"])
+    y = np.asarray(d["y"])
     snapshots = {}
     for key in d.files:
         if key.startswith("Te_"):
@@ -317,7 +435,8 @@ def _load_reference_checkpoint(path: Path):
             snapshots[float(tag)] = (np.asarray(d[f"Te_{tag}"]), np.asarray(d[f"Ti_{tag}"]), np.asarray(d[f"Tr_{tag}"]))
     history_raw = d["history_json"][0]
     history = json.loads(str(history_raw)) if str(history_raw) else []
-    return np.asarray(d["x"]), np.asarray(d["y"]), np.asarray(d["U"]), float(d["t"][0]), float(d["dt"][0]), int(d["step"][0]), snapshots, history
+    grid_convention = str(d["grid_convention"][0]) if "grid_convention" in d.files else infer_grid_convention(x)
+    return x, y, np.asarray(d["U"]), float(d["t"][0]), float(d["dt"][0]), int(d["step"][0]), snapshots, history, grid_convention
 
 
 def solve_reference(
@@ -329,8 +448,8 @@ def solve_reference(
     checkpoint_interval_steps: int = 25,
     max_walltime_seconds: float = 0.0,
 ):
-    x = np.linspace(0.0, 1.0, cfg.nx, dtype=np.float64)
-    y = np.linspace(0.0, 1.0, cfg.ny, dtype=np.float64)
+    x = make_grid(cfg.nx, cfg.grid_convention)
+    y = make_grid(cfg.ny, cfg.grid_convention)
     dx, dy = float(x[1] - x[0]), float(y[1] - y[0])
     X, _Y = np.meshgrid(x, y)
     U = pack(np.full_like(X, p.t0), np.full_like(X, p.t0), np.full_like(X, p.t0))
@@ -340,8 +459,11 @@ def solve_reference(
     history = []
     diagnostics = []
     t, dt, step = 0.0, cfg.dt_init, 0
+    active_grid_convention = cfg.grid_convention
     if resume_checkpoint:
-        x, y, U, t, dt, step, snapshots, history = _load_reference_checkpoint(resume_checkpoint)
+        x, y, U, t, dt, step, snapshots, history, loaded_grid_convention = _load_reference_checkpoint(resume_checkpoint)
+        if loaded_grid_convention != "unknown":
+            active_grid_convention = loaded_grid_convention
         dx, dy = float(x[1] - x[0]), float(y[1] - y[0])
         print(f"[reference] resumed {resume_checkpoint} at step={step} t={t:.6f} dt={dt:.2e}", flush=True)
     start = time.time()
@@ -377,7 +499,7 @@ def solve_reference(
                 debug_path = None
                 if checkpoint_path and cfg.debug_on_failure:
                     debug_path = checkpoint_path.with_suffix(".failed.npz")
-                    _save_reference_checkpoint(debug_path, x, y, U, t, dt, step, snapshots, history, diagnostics)
+                    _save_reference_checkpoint(debug_path, x, y, U, t, dt, step, snapshots, history, diagnostics, active_grid_convention)
                     print(f"[reference] wrote failure debug checkpoint {debug_path}", flush=True)
                 suffix = f"; debug_checkpoint={debug_path}" if debug_path else ""
                 raise RuntimeError(f"Reference solve failed: dt<{cfg.dt_min} at t={t:.6f}; last residual={res:.3e}{suffix}")
@@ -394,6 +516,7 @@ def solve_reference(
             "residual_norm": res,
             "gmres_info": details.get("gmres_info"),
             "gmres_summary": details.get("gmres_summary"),
+            "newton_diagnostics": details.get("newton_diagnostics"),
         })
         if cfg.log_every_step or step % 25 == 0 or t >= 1.0 - 1e-14:
             print(
@@ -412,19 +535,19 @@ def solve_reference(
         if nit <= 3 and dt < cfg.dt_max:
             dt = min(cfg.dt_max, dt * 1.2)
         if checkpoint_path and checkpoint_interval_steps > 0 and step % checkpoint_interval_steps == 0:
-            _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history, diagnostics)
+            _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history, diagnostics, active_grid_convention)
         if checkpoint_path and max_walltime_seconds > 0.0 and time.time() - start >= max_walltime_seconds:
-            _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history, diagnostics)
+            _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history, diagnostics, active_grid_convention)
             raise TimeoutError(f"reference solve reached walltime at step={step} t={t:.6f}; checkpoint={checkpoint_path}")
 
     print(f"[reference] done in {time.time()-start:.1f}s, steps={step}", flush=True)
     if checkpoint_path:
-        _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history, diagnostics)
+        _save_reference_checkpoint(checkpoint_path, x, y, U, t, dt, step, snapshots, history, diagnostics, active_grid_convention)
     return x, y, snapshots, history
 
 
-def save_npz(path: Path, x: np.ndarray, y: np.ndarray, snapshots: Dict[float, Tuple[np.ndarray, np.ndarray, np.ndarray]]) -> None:
-    data = {"x": x, "y": y}
+def save_npz(path: Path, x: np.ndarray, y: np.ndarray, snapshots: Dict[float, Tuple[np.ndarray, np.ndarray, np.ndarray]], grid_convention: str = "unknown") -> None:
+    data = {"x": x, "y": y, "grid_convention": np.array([grid_convention], dtype=object)}
     for t, (Te, Ti, Tr) in sorted(snapshots.items()):
         tag = f"{t:.10f}"
         data[f"Te_{tag}"] = Te
@@ -452,10 +575,10 @@ def resample_field(field: np.ndarray, x_old: np.ndarray, y_old: np.ndarray, x_ne
     return np.vstack([np.interp(y_new, y_old, along_x[:, j]) for j in range(len(x_new))]).T
 
 
-def resample_npz(src: Path, dst: Path, nx: int, ny: int) -> None:
+def resample_npz(src: Path, dst: Path, nx: int, ny: int, grid_convention: str = "cell_center") -> None:
     x_old, y_old, snapshots = load_npz(src)
-    x_new = np.linspace(float(x_old[0]), float(x_old[-1]), nx, dtype=np.float64)
-    y_new = np.linspace(float(y_old[0]), float(y_old[-1]), ny, dtype=np.float64)
+    x_new = make_grid(nx, grid_convention)
+    y_new = make_grid(ny, grid_convention)
     resampled = {}
     for t, (Te, Ti, Tr) in sorted(snapshots.items()):
         Te_new = resample_field(Te, x_old, y_old, x_new, y_new)
@@ -463,7 +586,7 @@ def resample_npz(src: Path, dst: Path, nx: int, ny: int) -> None:
         Tr_new = resample_field(Tr, x_old, y_old, x_new, y_new)
         Tr_new[-1, :] = tr_surface(t, nx, PhysicalParams.t0)
         resampled[t] = (Te_new, Ti_new, Tr_new)
-    save_npz(dst, x_new, y_new, resampled)
+    save_npz(dst, x_new, y_new, resampled, grid_convention)
 
 
 def time_label(t: float) -> str:
@@ -491,7 +614,11 @@ def write_author_txt(path: Path, Te: np.ndarray, Ti: np.ndarray, Tr: np.ndarray)
 
 
 def export_author_files(npz_path: Path, out_dir: Path, case: str) -> list[Path]:
-    _x, _y, snapshots = load_npz(npz_path)
+    x, _y, snapshots = load_npz(npz_path)
+    grid_convention = infer_grid_convention(x)
+    with np.load(npz_path, allow_pickle=True) as d:
+        if "grid_convention" in d.files:
+            grid_convention = str(d["grid_convention"][0])
     written: list[Path] = []
     if case == "aei70_krar":
         for t, (Te, Ti, Tr) in sorted(snapshots.items()):
@@ -520,12 +647,25 @@ def export_author_files(npz_path: Path, out_dir: Path, case: str) -> list[Path]:
             seen.add(path)
     else:
         raise ValueError(f"unknown case: {case}")
+    metadata = {
+        "case": case,
+        "source_npz": str(npz_path),
+        "grid_convention": grid_convention,
+        "author_reader_coordinate_convention": "cell_center",
+        "coordinate_consistency": grid_convention == "cell_center",
+        "note": "Author txt files store indices only; existing readers map them to cell-center coordinates.",
+        "written_files": [str(path) for path in written],
+    }
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "reference_export_metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return written
 
 
 def validate_npz(path: Path) -> dict:
+    d = np.load(path, allow_pickle=True)
     x, y, snapshots = load_npz(path)
-    report = {"path": str(path), "nx": int(len(x)), "ny": int(len(y)), "times": []}
+    grid_convention = str(d["grid_convention"][0]) if "grid_convention" in d.files else infer_grid_convention(x)
+    report = {"path": str(path), "nx": int(len(x)), "ny": int(len(y)), "grid_convention": grid_convention, "times": []}
     for t, (Te, Ti, Tr) in sorted(snapshots.items()):
         arrays = {"Te": Te, "Ti": Ti, "Tr": Tr}
         item = {"time": float(t)}
@@ -555,6 +695,7 @@ def main() -> None:
     solve_p.add_argument("--out", type=Path, required=True)
     solve_p.add_argument("--nx", type=int, default=80)
     solve_p.add_argument("--ny", type=int, default=80)
+    solve_p.add_argument("--grid-convention", choices=["cell_center", "endpoint"], default="cell_center")
     solve_p.add_argument("--times", default="1e-5,0.3,0.5,0.7,1.0")
     solve_p.add_argument("--dt-init", type=float, default=5e-3)
     solve_p.add_argument("--dt-min", type=float, default=1e-6)
@@ -568,6 +709,7 @@ def main() -> None:
     solve_p.add_argument("--log-every-step", action="store_true")
     solve_p.add_argument("--log-rejected-steps", action="store_true")
     solve_p.add_argument("--debug-on-failure", action="store_true")
+    solve_p.add_argument("--detailed-diagnostics", action="store_true")
 
     export_p = sub.add_parser("export", help="export author txt files from an npz")
     export_p.add_argument("--case", choices=["aei70_krar", "aei700_krartr"], required=True)
@@ -583,6 +725,7 @@ def main() -> None:
     res_p.add_argument("--out", type=Path, required=True)
     res_p.add_argument("--nx", type=int, required=True)
     res_p.add_argument("--ny", type=int, required=True)
+    res_p.add_argument("--grid-convention", choices=["cell_center", "endpoint"], default="cell_center")
 
     args = parser.parse_args()
     if args.cmd == "solve":
@@ -593,6 +736,7 @@ def main() -> None:
         cfg = ReferenceConfig(
             nx=args.nx,
             ny=args.ny,
+            grid_convention=args.grid_convention,
             dt_init=args.dt_init,
             dt_min=args.dt_min,
             dt_max=args.dt_max,
@@ -601,6 +745,7 @@ def main() -> None:
             log_every_step=args.log_every_step,
             log_rejected_steps=args.log_rejected_steps,
             debug_on_failure=args.debug_on_failure,
+            detailed_diagnostics=args.detailed_diagnostics,
         )
         x, y, snapshots, history = solve_reference(
             params,
@@ -611,7 +756,7 @@ def main() -> None:
             checkpoint_interval_steps=args.checkpoint_interval_steps,
             max_walltime_seconds=args.max_walltime_seconds,
         )
-        save_npz(args.out, x, y, snapshots)
+        save_npz(args.out, x, y, snapshots, infer_grid_convention(x))
         meta = {"case": args.case, "params": asdict(params), "config": asdict(cfg), "history": history}
         args.out.with_suffix(".history.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         print(f"[ok] wrote {args.out}")
@@ -627,7 +772,7 @@ def main() -> None:
             args.json_out.write_text(text + "\n", encoding="utf-8")
         print(text)
     elif args.cmd == "resample":
-        resample_npz(args.npz, args.out, args.nx, args.ny)
+        resample_npz(args.npz, args.out, args.nx, args.ny, args.grid_convention)
         print(f"[ok] wrote {args.out}")
 
 

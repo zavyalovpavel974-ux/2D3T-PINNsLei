@@ -9,6 +9,7 @@ writable through this runner.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -20,13 +21,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_RUN_ROOT = ROOT / "runs"
 PROTECTED_RUN_NAMES = {"overnight_current"}
 EXAMPLE5_STAGES = (70, 400, 700)
 INVERSE_CASES = {"example2", "example6"}
-FORWARD_CASES = {"example3", "example4", "example5"}
+FORWARD_CASES = {"example2_forward", "example3", "example4", "example5"}
 PAPER = {
     "example2": {
         "Te": {"L2": 1.446e-2, "L1": 5.388e-3, "Linf": 1.684e-2},
@@ -84,6 +87,139 @@ def count_lines(path: Path) -> int:
         return sum(1 for _ in f)
 
 
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def read_author_txt_header(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as f:
+        dim, num_t, _unused = eval(f.readline())
+        (imin, jmin), (imax, jmax), _unused = eval(f.readline())
+    ny = int(imax - imin + 1)
+    nx = int(jmax - jmin + 1)
+    expected_lines = 2 + ny * nx * int(num_t)
+    return {
+        "dim": int(dim),
+        "num_t": int(num_t),
+        "ny": ny,
+        "nx": nx,
+        "expected_lines": expected_lines,
+        "coordinate_convention": "author_reader_cell_center",
+    }
+
+
+def infer_grid_convention_from_npz(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    with np.load(path, allow_pickle=True) as data:
+        if "grid_convention" in data.files:
+            return str(data["grid_convention"][0])
+        x = np.asarray(data["x"], dtype=float)
+    n = len(x)
+    if n < 2:
+        return "unknown"
+    if np.allclose(x, (np.arange(n, dtype=float) + 0.5) / n, rtol=0.0, atol=1e-12):
+        return "cell_center"
+    if np.allclose(x, np.linspace(0.0, 1.0, n, dtype=float), rtol=0.0, atol=1e-12):
+        return "endpoint"
+    return "custom"
+
+
+def read_reference_source_metadata(data_source: Path) -> dict[str, Any]:
+    metadata_path = data_source / "reference_export_metadata.json"
+    if metadata_path.exists():
+        try:
+            return json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return {"metadata_read_error": str(exc)}
+    npz_convention = infer_grid_convention_from_npz(data_source / "reference_snapshots.npz")
+    if npz_convention:
+        return {"grid_convention": npz_convention, "source": str(data_source / "reference_snapshots.npz")}
+    return {}
+
+
+def infer_reference_profile(data_source: Path, records: list[dict[str, Any]]) -> dict[str, Any]:
+    source_metadata = read_reference_source_metadata(data_source)
+    source_grid_convention = source_metadata.get("grid_convention")
+    grids = sorted({(int(r["ny"]), int(r["nx"])) for r in records})
+    profile: dict[str, Any] = {
+        "data_source": str(data_source),
+        "grids": [{"ny": ny, "nx": nx} for ny, nx in grids],
+        "coordinate_convention": "author_reader_cell_center",
+        "source_grid_convention": source_grid_convention or "unknown",
+        "coordinate_consistency": source_grid_convention in (None, "unknown", "cell_center"),
+        "mode": "unknown",
+        "paper_grade": False,
+        "notes": [],
+    }
+    if source_grid_convention and source_grid_convention not in {"unknown", "cell_center"}:
+        profile["notes"].append(
+            f"Source reference grid is {source_grid_convention}, while author text readers evaluate indices as cell centers."
+        )
+    if len(grids) != 1:
+        profile["mode"] = "mixed_grid"
+        profile["notes"].append("Input text files use multiple grid sizes.")
+        return profile
+
+    ny, nx = grids[0]
+    name = str(data_source).lower()
+    if nx == ny == 32 and "32" in name:
+        profile["mode"] = "strict32"
+        profile["notes"].append("Strict 32x32 numerical reference; useful as an intermediate-fidelity check.")
+        return profile
+    if nx == ny == 20 and "20" in name:
+        profile["mode"] = "strict20"
+        profile["notes"].append("Strict 20x20 numerical reference; low-fidelity relative to the paper's 80x80 reference.")
+        return profile
+
+    if nx == ny == 80:
+        all_from20 = True
+        checked = 0
+        matched_source_dirs: list[Path] = []
+        for r in records:
+            candidates = [
+                ROOT / "reference_exports" / "aei70_krar_80_from20" / r["name"],
+                ROOT / "reference_exports" / "aei700_krartr_80_from20" / r["name"],
+            ]
+            matches_known_from20 = False
+            for candidate in candidates:
+                if candidate.exists():
+                    checked += 1
+                    if sha256_file(candidate) == r["sha256"]:
+                        matches_known_from20 = True
+                        matched_source_dirs.append(candidate.parent)
+                        break
+            if not matches_known_from20:
+                all_from20 = False
+                break
+        if checked and all_from20:
+            profile["mode"] = "80x80_from20"
+            for source_dir in matched_source_dirs:
+                inferred = infer_grid_convention_from_npz(source_dir / "reference_snapshots.npz")
+                if inferred:
+                    profile["source_grid_convention"] = inferred
+                    profile["coordinate_consistency"] = inferred in {"unknown", "cell_center"}
+                    if not profile["coordinate_consistency"]:
+                        profile["notes"].append(
+                            f"Known interpolation source grid is {inferred}, while author text readers evaluate indices as cell centers."
+                        )
+                    break
+            profile["notes"].append("80x80 text files are direct resamples of strict 20x20 outputs; use for pipeline validation, not paper-grade claims.")
+        else:
+            profile["mode"] = "strict80_or_unknown"
+            profile["paper_grade"] = True
+            profile["notes"].append("80x80 grid detected, but the source was not identified as a known 20x20 interpolation artifact.")
+        return profile
+
+    profile["mode"] = f"{ny}x{nx}_unknown"
+    profile["notes"].append("Grid size is not one of the expected 20x20, 32x32, or 80x80 reference modes.")
+    return profile
+
+
 def copy_inputs(workdir: Path, data_source: Path) -> list[dict[str, Any]]:
     workdir.mkdir(parents=True, exist_ok=True)
     for name in SCRIPT_FILES:
@@ -92,12 +228,20 @@ def copy_inputs(workdir: Path, data_source: Path) -> list[dict[str, Any]]:
     for src in sorted(data_source.glob("sol1_*.txt")):
         dst = workdir / src.name
         shutil.copy2(src, dst)
-        records.append({"name": src.name, "lines": count_lines(dst), "bytes": dst.stat().st_size})
+        header = read_author_txt_header(dst)
+        lines = count_lines(dst)
+        record = {
+            "name": src.name,
+            "lines": lines,
+            "bytes": dst.stat().st_size,
+            "sha256": sha256_file(dst),
+            **header,
+        }
+        if lines != header["expected_lines"]:
+            raise RuntimeError(f"unexpected sol1 file line count for {src.name}: got {lines}, expected {header['expected_lines']}")
+        records.append(record)
     if len(records) != 11:
         raise RuntimeError(f"expected 11 sol1_*.txt files, found {len(records)} in {data_source}")
-    bad = [r for r in records if r["lines"] != 19202]
-    if bad:
-        raise RuntimeError(f"unexpected sol1 file line counts: {bad}")
     return records
 
 
@@ -199,6 +343,12 @@ def collect_run_status(run_dir: Path) -> dict[str, Any]:
         "figures_exists": figures.exists(),
         "cases": {},
     }
+    environment = reports / "environment.json"
+    if environment.exists():
+        try:
+            status["reference_profile"] = json.loads(environment.read_text(encoding="utf-8")).get("reference_profile")
+        except Exception as exc:
+            status["reference_profile_error"] = str(exc)
     def has_case_artifacts(case_name: str) -> bool:
         return any(
             path.exists()
@@ -210,7 +360,7 @@ def collect_run_status(run_dir: Path) -> dict[str, Any]:
         )
 
     cases_to_report = []
-    for candidate in ("example2", "example6", "example3", "example4", "example5"):
+    for candidate in ("example2", "example6", "example2_forward", "example3", "example4", "example5"):
         if has_case_artifacts(candidate):
             cases_to_report.append(candidate)
     if not cases_to_report:
@@ -230,6 +380,8 @@ def collect_run_status(run_dir: Path) -> dict[str, Any]:
             try:
                 parsed = json.loads(metrics.read_text(encoding="utf-8"))
                 case_status["metrics_case"] = parsed.get("case")
+                case_status["metrics_available"] = parsed.get("metrics_available")
+                case_status["coordinate_evaluation"] = parsed.get("coordinate_evaluation")
                 case_status["aggregate"] = parsed.get("aggregate")
                 if case in INVERSE_CASES:
                     case_status["rho"] = parsed.get("rho")
@@ -252,9 +404,17 @@ def format_status(status: dict[str, Any]) -> str:
         f"Run: {status['run_dir']}",
         f"Exists: {status['exists']}",
         f"Protected: {status['protected']}",
-        "",
-        "Cases:",
     ]
+    reference_profile = status.get("reference_profile")
+    if reference_profile:
+        lines += [
+            f"Reference mode: {reference_profile.get('mode', 'unknown')}",
+            f"Reference paper-grade: {reference_profile.get('paper_grade', False)}",
+            f"Reference coordinates: {reference_profile.get('coordinate_convention', 'unknown')}",
+            f"Reference source grid: {reference_profile.get('source_grid_convention', 'unknown')}",
+            f"Reference coordinate consistency: {reference_profile.get('coordinate_consistency', 'unknown')}",
+        ]
+    lines += ["", "Cases:"]
     for case, case_status in status["cases"].items():
         checkpoint = case_status["checkpoint"]
         stage = case_status.get("stage")
@@ -275,6 +435,10 @@ def format_status(status: dict[str, Any]) -> str:
             lines.append(f"  rho: {case_status['rho']}")
         if case == "example5" and "inference_time_seconds" in case_status:
             lines.append(f"  inference_time_seconds: {case_status['inference_time_seconds']}")
+        if case in FORWARD_CASES and case_status.get("metrics_available") is not None:
+            lines.append(f"  metrics_available: {case_status['metrics_available']}")
+        if case in FORWARD_CASES and case_status.get("coordinate_evaluation"):
+            lines.append(f"  coordinate_evaluation: {case_status['coordinate_evaluation']}")
     lines += [
         "",
         f"Reports: {status['reports_dir']}",
@@ -316,6 +480,8 @@ def build_case_command(
     ]
     if case in INVERSE_CASES:
         cmd += ["--rho-init", str(rho_init), "--seed", str(seed)]
+    elif case == "example2_forward":
+        cmd += ["--transfer-stages", "70", "--kr-mode", "constant", "--no-use-ff", "--no-use-log-loss", "--lambda-brd", "1000", "--lambda-init", "10", "--skip-metrics"]
     elif case == "example3":
         cmd += ["--transfer-stages", "70,400", "--kr-mode", "constant", "--no-use-ff", "--use-log-loss", "--lambda-brd", "20", "--lambda-init", "10", "--skip-metrics"]
     elif case == "example4":
@@ -406,7 +572,7 @@ def comparison_table(metrics: dict[str, Any], paper_case: str) -> list[str]:
     return lines
 
 
-def write_report(run_dir: Path, inputs: list[dict[str, Any]], results: list[dict[str, Any]], info: dict[str, Any]) -> None:
+def write_report(run_dir: Path, inputs: list[dict[str, Any]], results: list[dict[str, Any]], info: dict[str, Any], reference_profile: dict[str, Any]) -> None:
     reports = run_dir / "reports"
     lines = [
         "# Reproduction Runner Report",
@@ -419,12 +585,29 @@ def write_report(run_dir: Path, inputs: list[dict[str, Any]], results: list[dict
         f"- PyTorch: {info.get('torch')}",
         f"- CUDA available: {info.get('cuda')}",
         f"- GPU: {info.get('gpu')}",
-        "- Reference mode: interpolated 80x80_from20 validation data, not strict paper-grade 80x80 reference data.",
+        f"- Reference mode: {reference_profile.get('mode', 'unknown')}",
+        f"- Reference paper-grade: {reference_profile.get('paper_grade', False)}",
+        f"- Reference coordinate convention: {reference_profile.get('coordinate_convention', 'unknown')}",
+        f"- Reference source grid convention: {reference_profile.get('source_grid_convention', 'unknown')}",
+        f"- Reference coordinate consistency: {reference_profile.get('coordinate_consistency', 'unknown')}",
+        f"- Reference data source: {reference_profile.get('data_source', 'unknown')}",
+        "",
+        "Reference notes:",
+        "",
+    ]
+    for note in reference_profile.get("notes", []):
+        lines.append(f"- {note}")
+    if not reference_profile.get("notes"):
+        lines.append("- n/a")
+    lines += [
         "",
         "## Input Files",
         "",
     ]
-    lines += [f"- {r['name']}: {r['lines']} lines, {r['bytes']} bytes" for r in inputs]
+    lines += [
+        f"- {r['name']}: {r['ny']}x{r['nx']}, {r['lines']} lines, {r['bytes']} bytes, coordinates={r['coordinate_convention']}"
+        for r in inputs
+    ]
     lines += ["", "## Runs", ""]
     for result in results:
         lines += [
@@ -455,6 +638,20 @@ def write_report(run_dir: Path, inputs: list[dict[str, Any]], results: list[dict
                     "",
                 ]
                 lines += comparison_table(metrics, "example2")
+            elif result["case"] == "example2_forward":
+                lines += [
+                    "Example 2 forward metrics against paper Table 4:",
+                    "",
+                    f"- Metrics available: {metrics.get('metrics_available', False)}",
+                    f"- Reference files: {metrics.get('reference', 'n/a')}",
+                    f"- Coordinate evaluation: {metrics.get('coordinate_evaluation', 'n/a')}",
+                    f"- Final stage: {metrics.get('final_stage', 'n/a')}",
+                    f"- Kr mode: {metrics.get('kr_mode', 'n/a')}",
+                    f"- Fourier feature embedding: {metrics.get('use_ff', 'n/a')}",
+                    f"- Log initial/boundary loss: {metrics.get('use_log_loss', 'n/a')}",
+                    "",
+                ]
+                lines += comparison_table(metrics, "example2")
             elif result["case"] == "example5":
                 lines += comparison_table(metrics, "example5")
             else:
@@ -481,7 +678,9 @@ def run_workflow(args: argparse.Namespace) -> Path:
     workdir = run_dir / "workdir"
     (run_dir / "reports").mkdir(parents=True, exist_ok=True)
     inputs = copy_inputs(workdir, args.data_source)
+    reference_profile = infer_reference_profile(args.data_source, inputs)
     info = env_info()
+    info["reference_profile"] = reference_profile
     (run_dir / "reports" / "environment.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
 
     cases = ["example6", "example5"] if args.case == "all" else [args.case]
@@ -497,17 +696,17 @@ def run_workflow(args: argparse.Namespace) -> Path:
             args.seed,
         )
         results.append(result)
-        write_report(run_dir, inputs, results, info)
+        write_report(run_dir, inputs, results, info, reference_profile)
         if result["returncode"] != 0:
             break
-    write_report(run_dir, inputs, results, info)
+    write_report(run_dir, inputs, results, info, reference_profile)
     print(run_dir)
     return run_dir
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case", choices=["example2", "example3", "example4", "example6", "example5", "all"], default="all")
+    parser.add_argument("--case", choices=["example2", "example2_forward", "example3", "example4", "example6", "example5", "all"], default="all")
     parser.add_argument("--data-source", type=Path, default=Path(r"C:\Users\12412\Documents\Lei_code"))
     parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT)
     parser.add_argument("--run-name", default=None)

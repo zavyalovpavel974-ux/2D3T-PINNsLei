@@ -16,6 +16,7 @@ param(
   [switch]$LogEveryStep,
   [switch]$LogRejectedSteps,
   [switch]$DebugOnFailure,
+  [switch]$DetailedDiagnostics,
   [switch]$DryRun
 )
 
@@ -43,6 +44,9 @@ if ($LogRejectedSteps) {
 }
 if ($DebugOnFailure) {
   $argsList += "--debug-on-failure"
+}
+if ($DetailedDiagnostics) {
+  $argsList += "--detailed-diagnostics"
 }
 if ($DryRun) {
   $argsList += "--dry-run"

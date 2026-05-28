@@ -50,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-every-step", action="store_true")
     parser.add_argument("--log-rejected-steps", action="store_true")
     parser.add_argument("--debug-on-failure", action="store_true")
+    parser.add_argument("--detailed-diagnostics", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -119,6 +120,8 @@ def main() -> None:
         command.append("--log-rejected-steps")
     if args.debug_on_failure:
         command.append("--debug-on-failure")
+    if args.detailed_diagnostics:
+        command.append("--detailed-diagnostics")
     previous_ckpt = None
     if args.segment > 1:
         previous_ckpt = ckpt_dir / f"segment_{args.segment - 1}.ckpt.npz"

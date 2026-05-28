@@ -139,7 +139,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     start_parser = sub.add_parser("start")
-    start_parser.add_argument("--case", choices=["example2", "example3", "example4", "example6", "example5", "all"], default="all")
+    start_parser.add_argument("--case", choices=["example2", "example2_forward", "example3", "example4", "example6", "example5", "all"], default="all")
     start_parser.add_argument("--data-source", type=Path, default=Path(r"C:\Users\12412\Documents\Lei_code"))
     start_parser.add_argument("--run-root", type=Path, default=DEFAULT_RUN_ROOT)
     start_parser.add_argument("--run-name", required=True)

@@ -83,7 +83,7 @@ def subset_metrics(references, predictions, supervision_indices, mode):
             "L2": float(np.sqrt(np.mean(np.square(error[:,2]))) / np.sqrt(np.mean(np.square(reference_all[:,2])))),
             "L1": float(np.mean(error[:,2])),
             "Linf": float(np.max(error[:,2])),
-        },
+        }
     }
 
 

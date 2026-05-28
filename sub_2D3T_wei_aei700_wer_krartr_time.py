@@ -58,6 +58,17 @@ def _as_float(value):
     return float(value)
 
 
+def _sanitize_lbfgs_state(optimizer):
+    reset_required = False
+    for state in optimizer.state.values():
+        if state.get("prev_flat_grad") is None:
+            reset_required = True
+            break
+    if reset_required:
+        optimizer.state.clear()
+    return reset_required
+
+
 # ===========================================================
 # ****  这里加了一个控制设备和精度的，拿GPU跑了一个100000 iteration的
 # ===========================================================
@@ -377,6 +388,8 @@ class PhysicsInformedNN:
                 scheduler.load_state_dict(checkpoint["scheduler"])
             if "lbfgs" in checkpoint:
                 opt_lbfgs.load_state_dict(checkpoint["lbfgs"])
+                if _sanitize_lbfgs_state(opt_lbfgs):
+                    print("[repro] reset invalid LBFGS optimizer history from checkpoint", flush=True)
             start_iter = int(checkpoint.get("adam_iter", 0))
             resume_phase = checkpoint.get("phase")
             print("[repro] resumed checkpoint %s at phase=%s it=%s rho=%.8e" % (
@@ -401,9 +414,11 @@ class PhysicsInformedNN:
         #     return f"{value:.4f}"
         
 
-        # ============================================================
+        # ============================================================ 
         # ****  Define Loss and Logging Information  
         # ============================================================ 
+
+        current_phase = "adam"
 
         def complus_loss(it = None):
             
@@ -843,9 +858,9 @@ class PhysicsInformedNN:
             nonlocal last_checkpoint_it
             if checkpoint_dir and args.checkpoint_interval > 0 and it % args.checkpoint_interval == 0 and it != last_checkpoint_it:
                 last_checkpoint_it = it
-                path = save_checkpoint(it, "adam" if it < nIter else "lbfgs", loss)
+                path = save_checkpoint(it, current_phase, loss)
                 print("[repro] checkpoint saved: %s" % path, flush=True)
-            maybe_stop_for_walltime(it, "adam" if it < nIter else "lbfgs", loss)
+            maybe_stop_for_walltime(it, current_phase, loss)
             self.net_u.zero_grad() # model.zero_grad 与 opt.zero_grad 完全等价，opt甚至是调用了model.
             loss.backward()
             return loss
@@ -856,6 +871,7 @@ class PhysicsInformedNN:
         # ============================================================ 
 
         if resume_phase not in {"lbfgs", "lbfgs_start"}:
+            current_phase = "adam"
             for it in range(start_iter, nIter):
                 
                 #opt.zero_grad()
@@ -866,7 +882,9 @@ class PhysicsInformedNN:
         # ============================================================
         # ****  LBFGS , LBFGS 可以自行获取迭代次数 用以判断输出，无需传入
         # ============================================================ 
-        save_checkpoint(nIter, "lbfgs_start")
+        current_phase = "lbfgs"
+        if resume_phase not in {"lbfgs", "lbfgs_start"}:
+            save_checkpoint(nIter, "lbfgs_start")
         opt_lbfgs.step(complus_loss)
         save_checkpoint(nIter, "completed")
             
